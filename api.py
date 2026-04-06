@@ -60,13 +60,12 @@ def _scrape_paradero(paradero: str, servicio: str = "") -> dict:
     session.headers.update(_IBUS_HEADERS)
 
     # Primera visita a la página principal (simula navegación humana)
+    # Se hace best-effort: si falla, igual se intenta consultar el Servlet
     try:
-        response = session.get(f"{_IBUS_BASE_URL}/index.jsp", verify=False, timeout=10)
-        time.sleep(random.uniform(1.0, 2.5))  # Delay humano
-    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-        raise HTTPException(status_code=502, detail=f"Error de conexión con iBUS: {str(e)}")
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Error al conectar con iBUS: {str(e)}")
+        session.get(f"{_IBUS_BASE_URL}/index.jsp", verify=False, timeout=8)
+        time.sleep(random.uniform(0.5, 1.5))  # Delay humano
+    except requests.exceptions.RequestException:
+        pass  # No es crítico, continuamos con la consulta
 
     # Headers específicos para el formulario
     session.headers.update({
@@ -78,7 +77,7 @@ def _scrape_paradero(paradero: str, servicio: str = "") -> dict:
     params = {"paradero": paradero, "servicio": servicio, "button": "Consulta Paradero"}
 
     try:
-        response = session.get(f"{_IBUS_BASE_URL}/Servlet", params=params, verify=False, timeout=15)
+        response = session.get(f"{_IBUS_BASE_URL}/Servlet", params=params, verify=False, timeout=20)
         time.sleep(random.uniform(0.5, 1.5))  # Pequeño delay antes de procesar
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
         raise HTTPException(status_code=502, detail=f"Timeout al consultar paradero: {str(e)}")
