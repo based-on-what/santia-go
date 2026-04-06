@@ -20,15 +20,16 @@ const agent = (url) => url.startsWith('https:') ? httpsAgent : httpAgent;
 // Reintentos con exponential backoff
 async function fetchWithRetry(url, options, maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
+    let timeout;
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000); // 8 segundos timeout
+      timeout = setTimeout(() => controller.abort(), 8000); // 8 segundos timeout
       
       const res = await fetch(url, { ...options, signal: controller.signal });
       clearTimeout(timeout);
       return res;
     } catch (err) {
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       if (i === maxRetries - 1) throw err; // último intento
       
       // Exponential backoff: 1s, 2s, 4s
