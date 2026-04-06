@@ -16,8 +16,16 @@ const HEADERS = {
 };
 
 exports.handler = async (event) => {
-  // El id llega por query string desde el redirect: /api/paradero/:id → ?id=:id
-  const paradero = (event.queryStringParameters?.id || '').toUpperCase().trim();
+  // Intentar obtener el id: primero query param, luego parsear desde la URL original
+  let paradero = event.queryStringParameters?.id || '';
+  if (!paradero && event.rawUrl) {
+    try {
+      const pathname = new URL(event.rawUrl).pathname;
+      paradero = pathname.split('/').filter(Boolean).pop() || '';
+    } catch (_) {}
+  }
+  paradero = paradero.toUpperCase().trim();
+
   if (!paradero) {
     return { statusCode: 400, body: JSON.stringify({ error: 'Código de paradero requerido (ej: PA443)' }) };
   }
