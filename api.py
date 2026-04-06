@@ -36,7 +36,7 @@ _SCHEDULE_TTL = 300  # segundos
 
 # ── iBUS ───────────────────────────────────────────────────────────────────────
 
-_IBUS_BASE_URL = "http://m.ibus.cl"
+_IBUS_BASE_URL = os.environ.get("IBUS_PROXY_URL", "http://m.ibus.cl")
 _IBUS_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
@@ -188,7 +188,8 @@ def health_check():
     return {"mensaje": "API local Red Santiago funcionando", "docs": "/docs"}
 
 
-@app.get("/paradero/{paradero}", summary="Buses en tiempo real para un paradero (iBUS)")
+@app.get("/api/paradero/{paradero}", summary="Buses en tiempo real para un paradero (iBUS)")
+@app.get("/paradero/{paradero}", include_in_schema=False)
 def consultar_paradero(
     paradero: str,
     servicio: str = Query(default="", description="Filtrar por línea de bus (ej: 506)")
@@ -202,7 +203,8 @@ def consultar_paradero(
     return _scrape_paradero(paradero.upper().strip(), servicio)
 
 
-@app.get("/metro-network", summary="Estado completo de la red de metro")
+@app.get("/api/metro-network", summary="Estado completo de la red de metro (con prefijo /api)")
+@app.get("/metro-network", include_in_schema=False)
 def get_metro_network():
     """
     Estado operacional de todas las líneas y estaciones (sin horarios).
@@ -212,7 +214,8 @@ def get_metro_network():
     return _network_to_dict(_get_network())
 
 
-@app.get("/metro/estacion", summary="Detalle de una estación con horarios")
+@app.get("/api/metro/estacion", summary="Detalle de una estación con horarios")
+@app.get("/metro/estacion", include_in_schema=False)
 def get_estacion(
     nombre: str = Query(..., description="Nombre exacto de la estación (ej: Baquedano)"),
 ):
@@ -248,7 +251,8 @@ def get_estacion(
     return _station_to_response(found_station, found_line_name)
 
 
-@app.get("/metro/estacion/{code}", summary="Detalle de una estación por código")
+@app.get("/api/metro/estacion/{code}", summary="Detalle de una estación por código")
+@app.get("/metro/estacion/{code}", include_in_schema=False)
 def get_estacion_by_code(code: str):
     """
     Devuelve estado + horarios de una estación por su código (ej: `BA` para Baquedano).
