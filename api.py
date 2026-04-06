@@ -37,6 +37,7 @@ _SCHEDULE_TTL = 300  # segundos
 # ── iBUS ───────────────────────────────────────────────────────────────────────
 
 _IBUS_BASE_URL = os.environ.get("IBUS_PROXY_URL", "http://m.ibus.cl")
+_IBUS_USE_PROXY = "IBUS_PROXY_URL" in os.environ
 _IBUS_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
@@ -59,15 +60,15 @@ def _scrape_paradero(paradero: str, servicio: str = "") -> dict:
     session = requests.Session()
     session.headers.update(_IBUS_HEADERS)
 
-    # Primera visita a la página principal (simula navegación humana)
-    # Se hace best-effort: si falla, igual se intenta consultar el Servlet
-    try:
-        session.get(f"{_IBUS_BASE_URL}/index.jsp", verify=False, timeout=8)
-        time.sleep(random.uniform(0.5, 1.5))  # Delay humano
-    except requests.exceptions.RequestException:
-        pass  # No es crítico, continuamos con la consulta
+    # Cuando se usa proxy (Cloudflare Worker) no hace falta calentar sesión.
+    # Directo al Servlet con timeout reducido para fallar rápido.
+    if not _IBUS_USE_PROXY:
+        try:
+            session.get(f"{_IBUS_BASE_URL}/index.jsp", verify=False, timeout=8)
+            time.sleep(random.uniform(0.5, 1.5))
+        except requests.exceptions.RequestException:
+            pass
 
-    # Headers específicos para el formulario
     session.headers.update({
         "Referer": f"{_IBUS_BASE_URL}/index.jsp",
         "Origin": _IBUS_BASE_URL,
@@ -75,10 +76,10 @@ def _scrape_paradero(paradero: str, servicio: str = "") -> dict:
     })
 
     params = {"paradero": paradero, "servicio": servicio, "button": "Consulta Paradero"}
+    timeout = 10 if _IBUS_USE_PROXY else 20
 
     try:
-        response = session.get(f"{_IBUS_BASE_URL}/Servlet", params=params, verify=False, timeout=20)
-        time.sleep(random.uniform(0.5, 1.5))  # Pequeño delay antes de procesar
+        response = session.get(f"{_IBUS_BASE_URL}/Servlet", params=params, verify=False, timeout=timeout)
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
         raise HTTPException(status_code=502, detail=f"Timeout al consultar paradero: {str(e)}")
     except requests.exceptions.RequestException as e:
