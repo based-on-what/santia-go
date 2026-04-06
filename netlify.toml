@@ -1,6 +1,24 @@
 [build]
   publish = "public"
-  # No build command needed — sitio estático puro (HTML + CSS + JS)
+  # No build command — sitio estático + Netlify Functions
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# ── Redirects API → Functions ──────────────────────────────────────────────────
+
+[[redirects]]
+  from = "/api/metro/estacion"
+  to   = "/.netlify/functions/metro-estacion"
+  status = 200
+
+[[redirects]]
+  from = "/api/paradero/:id"
+  to   = "/.netlify/functions/paradero?id=:id"
+  status = 200
+
+# ── Security headers ───────────────────────────────────────────────────────────
 
 [[headers]]
   for = "/*"

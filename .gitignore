@@ -6,6 +6,10 @@
 # Caché del Metro CLI
 .metro_cache.json
 
+# Node
+node_modules/
+.node_modules/
+
 # Python
 __pycache__/
 *.py[cod]

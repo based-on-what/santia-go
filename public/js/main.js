@@ -6,10 +6,11 @@
 // Token inyectado desde index.html como window.MAPBOX_TOKEN
 mapboxgl.accessToken = window.MAPBOX_TOKEN;
 
-// URL base de la API local Python.
-// Desarrollo local: levantar con `uvicorn api:app --reload` desde tools/python/
-// Producción: cambiar a la URL de tu API desplegada
-const API_BASE = 'http://localhost:8000';
+// Producción (Netlify): rutas relativas /api/... → Netlify Functions
+// Desarrollo local: servidor Python en localhost:8000 (python -m uvicorn api:app --reload)
+const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+  ? 'http://localhost:8000'
+  : '/api';
 
 const ROUTE_COLORS  = ['#FF0000', '#008000', '#0000FF'];
 const MAP_CENTER    = [-70.65, -33.45];
