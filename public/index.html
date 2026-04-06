@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Explorador de Transporte - Santiago</title>
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+  <link rel="stylesheet" href="./css/main.css" />
+</head>
+<body>
+
+  <div class="header">
+    <h1>🚇 Mapa Interactivo de Transporte - Santiago</h1>
+    <p>Haz clic en el mapa para encontrar el metro más cercano y los tres paraderos más próximos</p>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-color metro-color"></div><span>Metro más cercano</span></div>
+      <div class="legend-item"><div class="legend-color bus-red"></div><span>Paradero 1</span></div>
+      <div class="legend-item"><div class="legend-color bus-green"></div><span>Paradero 2</span></div>
+      <div class="legend-item"><div class="legend-color bus-blue"></div><span>Paradero 3</span></div>
+    </div>
+  </div>
+
+  <div id="map-container">
+    <div id="map"></div>
+    <div id="tooltip"></div>
+    <div class="loading" id="loading">
+      <div>
+        <div class="spinner"></div>
+        <p>Cargando datos de transporte...</p>
+      </div>
+    </div>
+
+    <div id="custom-popup" class="custom-popup">
+      <div class="custom-popup-header">
+        <div class="custom-popup-title" id="popup-title">Información</div>
+        <button class="custom-popup-close" id="popup-close">×</button>
+      </div>
+      <div class="custom-popup-content" id="popup-content">
+        <div class="loading-content">
+          <div class="loading-spinner"></div>
+          <p>Cargando información...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    📊 Datos GTFS: <a href="https://www.dtpm.cl/index.php/gtfs-vigente" target="_blank">Ministerio de Transporte de Chile</a> |
+    🔌 API: <a href="https://github.com/based-on-what/santiago-red-api" target="_blank">based-on-what/santiago-red-api</a> |
+    👨‍💻 Desarrollado con ❤️ por <a href="https://github.com/based-on-what/" target="_blank">@based-on-what</a> |
+    📁 Código no alojado en GitHub
+  </footer>
+
+  <script>
+    /* Token público de Mapbox (pk. = public key, diseñado para el navegador).
+       Para producción, reemplaza este valor o inyéctalo desde tu plataforma de deploy. */
+    window.MAPBOX_TOKEN = 'pk.eyJ1IjoiYmFzZWQtb24td2hhdCIsImEiOiJjbWNhbTBpcnAwNHVsMmxwdXF3Z3g2N3ZpIn0.LtS5KFjtj5ENVIlHqUwvGw';
+  </script>
+  <script src="./js/main.js"></script>
+</body>
+</html>

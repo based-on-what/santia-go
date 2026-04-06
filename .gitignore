@@ -1,0 +1,34 @@
+# Variables de entorno (NUNCA commitear)
+.env
+.env.local
+.env.production
+
+# Caché del Metro CLI
+.metro_cache.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Netlify
+.netlify/

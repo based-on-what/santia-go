@@ -1,0 +1,242 @@
+# api.py
+import sys
+import os
+import time
+
+# Permite importar el paquete 'metro' desde el mismo directorio que api.py
+sys.path.insert(0, os.path.dirname(__file__))
+
+import requests
+from bs4 import BeautifulSoup
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+app = FastAPI(
+    title="API local Red de Santiago",
+    description="Paraderos iBUS + Metro de Santiago (desarrollo local)",
+    version="2.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
+# ── Caché en memoria para horarios de estaciones (TTL: 5 min) ─────────────────
+# { codigo_estacion: (timestamp_float, dict_resultado) }
+_station_schedule_cache: dict[str, tuple[float, dict]] = {}
+_SCHEDULE_TTL = 300  # segundos
+
+# ── iBUS ───────────────────────────────────────────────────────────────────────
+
+_IBUS_BASE_URL = "http://m.ibus.cl"
+_IBUS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/29.0 Chrome/136.0.0.0 Mobile Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "es-US,es-419;q=0.9,es;q=0.8",
+    "Referer": f"{_IBUS_BASE_URL}/index.jsp",
+    "Upgrade-Insecure-Requests": "1",
+    "Connection": "keep-alive",
+}
+
+
+def _scrape_paradero(paradero: str, servicio: str = "") -> dict:
+    session = requests.Session()
+    session.headers.update(_IBUS_HEADERS)
+    session.get(f"{_IBUS_BASE_URL}/index.jsp", verify=False)
+
+    params = {"paradero": paradero, "servicio": servicio, "button": "Consulta Paradero"}
+    response = session.get(f"{_IBUS_BASE_URL}/Servlet", params=params, verify=False)
+
+    if response.status_code != 200 or len(response.text) < 100:
+        raise HTTPException(status_code=502, detail="Error al obtener datos de iBUS")
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    datos = {}
+    tabla_cab = soup.find("table", class_="cabecera4")
+    if tabla_cab:
+        for fila in tabla_cab.find_all("tr"):
+            celdas = fila.find_all("td")
+            if len(celdas) == 3:
+                datos[celdas[0].text.strip()] = celdas[2].text.strip().replace("\n", " ").strip()
+
+    servicios = []
+    for fila in soup.find_all("tr"):
+        celdas = fila.find_all("td", class_="menu_respuesta")
+        if not celdas:
+            continue
+        nombre_svc = celdas[0].text.strip()
+        if len(celdas) == 2:
+            servicios.append({"servicio": nombre_svc, "bus": None, "tiempo": celdas[1].text.strip(), "distancia_metros": None})
+        elif len(celdas) == 4:
+            dist = celdas[3].text.strip()
+            servicios.append({
+                "servicio": nombre_svc,
+                "bus": celdas[1].text.strip(),
+                "tiempo": celdas[2].text.strip(),
+                "distancia_metros": int(dist) if dist.isdigit() else None
+            })
+
+    return {
+        "paradero": datos.get("Paradero", paradero).strip(),
+        "nombre": datos.get("Nombre", "").strip(),
+        "hora_consulta": datos.get("Hora", "").strip(),
+        "servicios": servicios,
+    }
+
+
+# ── Metro helpers ──────────────────────────────────────────────────────────────
+
+def _get_network():
+    """Devuelve NetworkStatus desde caché de archivo o scraping fresco."""
+    from metro.cache import load_cache, save_cache
+    from metro.scraper import fetch_network_status
+
+    network = load_cache()
+    if not network:
+        network = fetch_network_status()
+        if not network:
+            raise HTTPException(status_code=502, detail="No se pudo obtener la red de metro")
+        save_cache(network)
+    return network
+
+
+def _station_to_response(station, line_name: str) -> dict:
+    """Serializa una Station a dict apto para JSON."""
+    from metro.cache import _schedule_to_dict, _train_to_dict
+    return {
+        "code": station.code,
+        "name": station.name,
+        "line_id": station.line_id,
+        "line_name": line_name,
+        "enabled": station.enabled,
+        "status_description": station.status_description,
+        "message": station.message,
+        "transfers": station.transfers,
+        "schedule": _schedule_to_dict(station.schedule),
+        "terminal_a": _train_to_dict(station.terminal_a),
+        "terminal_b": _train_to_dict(station.terminal_b),
+    }
+
+
+def _enrich_with_schedule(station) -> None:
+    """Agrega horarios a la estación; usa caché en memoria."""
+    from metro.scraper import fetch_station_schedule
+
+    key = station.code.upper()
+    now = time.time()
+
+    if key in _station_schedule_cache:
+        cached_at, _ = _station_schedule_cache[key]
+        if now - cached_at < _SCHEDULE_TTL:
+            # Ya cacheado y fresco — solo recuperar los objetos
+            sched_cached = _station_schedule_cache[key][1]
+            # El objeto station ya tendrá el schedule si fue enriquecido antes;
+            # si no, lo reconstruimos en el endpoint desde el dict cacheado.
+            return
+
+    sched, term_a, term_b = fetch_station_schedule(station.code)
+    station.schedule = sched
+    station.terminal_a = term_a
+    station.terminal_b = term_b
+    # Guardar marca de tiempo (el dict completo se arma en el endpoint)
+    _station_schedule_cache[key] = (now, {})
+
+
+# ── Endpoints ──────────────────────────────────────────────────────────────────
+
+@app.get("/")
+def root():
+    return {"mensaje": "API local Red Santiago funcionando", "docs": "/docs"}
+
+
+@app.get("/paradero/{paradero}", summary="Buses en tiempo real para un paradero (iBUS)")
+def consultar_paradero(
+    paradero: str,
+    servicio: str = Query(default="", description="Filtrar por línea de bus (ej: 506)")
+):
+    """
+    Scraping de m.ibus.cl para obtener los próximos buses de un paradero.
+
+    - **paradero**: código del paradero (ej: PA443)
+    - **servicio**: opcional, filtra por línea
+    """
+    return _scrape_paradero(paradero.upper().strip(), servicio)
+
+
+@app.get("/metro-network", summary="Estado completo de la red de metro")
+def get_metro_network():
+    """
+    Estado operacional de todas las líneas y estaciones (sin horarios).
+    Caché en archivo, TTL 5 minutos.
+    """
+    from metro.cache import _network_to_dict
+    return _network_to_dict(_get_network())
+
+
+@app.get("/metro/estacion", summary="Detalle de una estación con horarios")
+def get_estacion(
+    nombre: str = Query(..., description="Nombre exacto de la estación (ej: Baquedano)"),
+):
+    """
+    Devuelve estado + horarios de apertura/cierre + trenes de una estación.
+
+    - **nombre**: nombre exacto como aparece en el GeoJSON (ej: `Baquedano`, `U. de Chile`)
+
+    Combina `/api/estadoRedDetalle.php` + `/api/horariosEstacion.php`.
+    Los horarios se cachean en memoria por 5 minutos.
+    """
+    network = _get_network()
+
+    # Buscar estación por nombre (insensible a mayúsculas)
+    nombre_lower = nombre.strip().lower()
+    found_station = None
+    found_line_name = ""
+    for line in network.lines:
+        for station in line.stations:
+            if station.name.lower() == nombre_lower:
+                found_station = station
+                found_line_name = line.name
+                break
+        if found_station:
+            break
+
+    if not found_station:
+        raise HTTPException(status_code=404, detail=f"Estación '{nombre}' no encontrada en la red")
+
+    # Enriquecer con horarios (con caché en memoria)
+    _enrich_with_schedule(found_station)
+
+    return _station_to_response(found_station, found_line_name)
+
+
+@app.get("/metro/estacion/{code}", summary="Detalle de una estación por código")
+def get_estacion_by_code(code: str):
+    """
+    Devuelve estado + horarios de una estación por su código (ej: `BA` para Baquedano).
+    """
+    network = _get_network()
+
+    code_upper = code.upper().strip()
+    found_station = None
+    found_line_name = ""
+    for line in network.lines:
+        for station in line.stations:
+            if station.code.upper() == code_upper:
+                found_station = station
+                found_line_name = line.name
+                break
+        if found_station:
+            break
+
+    if not found_station:
+        raise HTTPException(status_code=404, detail=f"Estación con código '{code}' no encontrada")
+
+    _enrich_with_schedule(found_station)
+    return _station_to_response(found_station, found_line_name)
