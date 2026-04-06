@@ -17,6 +17,26 @@ const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 // Selecciona el agente correcto según el protocolo de la URL
 const agent = (url) => url.startsWith('https:') ? httpsAgent : httpAgent;
 
+// Reintentos con exponential backoff
+async function fetchWithRetry(url, options, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000); // 8 segundos timeout
+      
+      const res = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timeout);
+      return res;
+    } catch (err) {
+      clearTimeout(timeout);
+      if (i === maxRetries - 1) throw err; // último intento
+      
+      // Exponential backoff: 1s, 2s, 4s
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+    }
+  }
+}
+
 const BASE_URL = 'http://m.ibus.cl';
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/29.0 Chrome/136.0.0.0 Mobile Safari/537.36',
@@ -44,7 +64,7 @@ exports.handler = async (event) => {
   try {
     // 1. Iniciar sesión — obtener cookie de sesión
     const initUrl = `${BASE_URL}/index.jsp`;
-    const initRes = await fetch(initUrl, {
+    const initRes = await fetchWithRetry(initUrl, {
       headers: HEADERS,
       agent: agent(initUrl),
       redirect: 'follow',
@@ -54,7 +74,7 @@ exports.handler = async (event) => {
     // 2. Consultar paradero
     const params   = new URLSearchParams({ paradero, servicio: '', button: 'Consulta Paradero' });
     const mainUrl  = `${BASE_URL}/Servlet?${params}`;
-    const mainRes  = await fetch(mainUrl, {
+    const mainRes  = await fetchWithRetry(mainUrl, {
       headers: { ...HEADERS, Cookie: cookie },
       agent: agent(mainUrl),
       redirect: 'follow',
@@ -112,9 +132,20 @@ exports.handler = async (event) => {
 
   } catch (err) {
     console.error('paradero error:', err);
+    
+    // Distinguir entre timeout y otros errores
+    const isTimeout = err.name === 'AbortError' || err.code === 'ETIMEDOUT' || err.message?.includes('abort');
+    const errorMsg = isTimeout 
+      ? 'iBUS no responde (timeout después de 3 intentos)'
+      : `Error al consultar iBUS: ${err.message}`;
+    
     return {
       statusCode: 502,
-      body: JSON.stringify({ error: `Error al consultar iBUS: ${err.message}`, detail: err.cause?.message }),
+      body: JSON.stringify({ 
+        error: errorMsg,
+        detail: err.cause?.message,
+        retryable: true // cliente puede reintentar
+      }),
     };
   }
 };
