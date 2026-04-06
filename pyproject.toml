@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "santiago"
+version = "0.1.0"
+description = "SantiaGO metro app"
+dependencies = [
+    "fastapi==0.104.1",
+    "uvicorn[standard]==0.24.0",
+    "requests==2.31.0",
+    "beautifulsoup4==4.12.2",
+    "urllib3==2.0.7",
+    "click==8.1.7",
+    "rich==13.7.0",
+    "gunicorn==21.2.0"
+]
+
+[tool.setuptools]
+packages = ["metro"]

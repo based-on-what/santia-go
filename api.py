@@ -183,8 +183,8 @@ def _enrich_with_schedule(station) -> None:
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
-@app.get("/")
-def root():
+@app.get("/api/health")
+def health_check():
     return {"mensaje": "API local Red Santiago funcionando", "docs": "/docs"}
 
 
@@ -278,8 +278,8 @@ def get_estacion_by_code(code: str):
 
 # Ruta a la carpeta public donde están los archivos estáticos
 # En Railway: /app/public
-# En local: ../../../public (relativo a tools/python/)
-PUBLIC_DIR = Path(__file__).parent.parent.parent / "public"
+# En local: ./public (relativo a la raíz del proyecto)
+PUBLIC_DIR = Path(__file__).parent / "public"
 
 if PUBLIC_DIR.exists():
     # Montar la carpeta public como static files
