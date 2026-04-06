@@ -38,22 +38,52 @@ _SCHEDULE_TTL = 300  # segundos
 
 _IBUS_BASE_URL = "http://m.ibus.cl"
 _IBUS_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/29.0 Chrome/136.0.0.0 Mobile Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "es-US,es-419;q=0.9,es;q=0.8",
-    "Referer": f"{_IBUS_BASE_URL}/index.jsp",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
+    "Accept-Language": "es-CL,es-419;q=0.9,es;q=0.8,en-US;q=0.7,en;q=0.6",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "max-age=0",
     "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
     "Connection": "keep-alive",
 }
 
 
 def _scrape_paradero(paradero: str, servicio: str = "") -> dict:
+    import time
+    import random
+
     session = requests.Session()
     session.headers.update(_IBUS_HEADERS)
-    session.get(f"{_IBUS_BASE_URL}/index.jsp", verify=False)
+
+    # Primera visita a la página principal (simula navegación humana)
+    try:
+        response = session.get(f"{_IBUS_BASE_URL}/index.jsp", verify=False, timeout=10)
+        time.sleep(random.uniform(1.0, 2.5))  # Delay humano
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+        raise HTTPException(status_code=502, detail=f"Error de conexión con iBUS: {str(e)}")
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Error al conectar con iBUS: {str(e)}")
+
+    # Headers específicos para el formulario
+    session.headers.update({
+        "Referer": f"{_IBUS_BASE_URL}/index.jsp",
+        "Origin": _IBUS_BASE_URL,
+        "Content-Type": "application/x-www-form-urlencoded",
+    })
 
     params = {"paradero": paradero, "servicio": servicio, "button": "Consulta Paradero"}
-    response = session.get(f"{_IBUS_BASE_URL}/Servlet", params=params, verify=False)
+
+    try:
+        response = session.get(f"{_IBUS_BASE_URL}/Servlet", params=params, verify=False, timeout=15)
+        time.sleep(random.uniform(0.5, 1.5))  # Pequeño delay antes de procesar
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+        raise HTTPException(status_code=502, detail=f"Timeout al consultar paradero: {str(e)}")
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Error al consultar paradero en iBUS: {str(e)}")
 
     if response.status_code != 200 or len(response.text) < 100:
         raise HTTPException(status_code=502, detail="Error al obtener datos de iBUS")
