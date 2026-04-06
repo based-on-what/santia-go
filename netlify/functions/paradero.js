@@ -7,11 +7,15 @@
  */
 
 const fetch    = require('node-fetch');
+const http     = require('http');
 const https    = require('https');
 const { load } = require('cheerio');
 
-// Ignora certificado SSL inválido (igual que Python verify=False)
+const httpAgent  = new http.Agent();
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+
+// Selecciona el agente correcto según el protocolo de la URL
+const agent = (url) => url.startsWith('https:') ? httpsAgent : httpAgent;
 
 const BASE_URL = 'http://m.ibus.cl';
 const HEADERS = {
@@ -39,22 +43,20 @@ exports.handler = async (event) => {
 
   try {
     // 1. Iniciar sesión — obtener cookie de sesión
-    const initRes = await fetch(`${BASE_URL}/index.jsp`, {
+    const initUrl = `${BASE_URL}/index.jsp`;
+    const initRes = await fetch(initUrl, {
       headers: HEADERS,
-      agent: httpsAgent,
+      agent: agent(initUrl),
       redirect: 'follow',
     });
     const cookie = initRes.headers.get('set-cookie') || '';
 
     // 2. Consultar paradero
-    const params = new URLSearchParams({
-      paradero,
-      servicio: '',
-      button: 'Consulta Paradero',
-    });
-    const mainRes = await fetch(`${BASE_URL}/Servlet?${params}`, {
+    const params   = new URLSearchParams({ paradero, servicio: '', button: 'Consulta Paradero' });
+    const mainUrl  = `${BASE_URL}/Servlet?${params}`;
+    const mainRes  = await fetch(mainUrl, {
       headers: { ...HEADERS, Cookie: cookie },
-      agent: httpsAgent,
+      agent: agent(mainUrl),
       redirect: 'follow',
     });
 
