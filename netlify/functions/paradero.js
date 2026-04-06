@@ -1,10 +1,17 @@
 /**
  * Netlify Function: /api/paradero/PA467
  *
- * Fuente: scraping de http://m.ibus.cl
+ * Fuente: scraping de m.ibus.cl
+ * Usa node-fetch v2 + agente HTTPS con rejectUnauthorized:false
+ * (equivalente a requests verify=False en Python — m.ibus.cl tiene cert inválido)
  */
 
+const fetch    = require('node-fetch');
+const https    = require('https');
 const { load } = require('cheerio');
+
+// Ignora certificado SSL inválido (igual que Python verify=False)
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 const BASE_URL = 'http://m.ibus.cl';
 const HEADERS = {
@@ -13,15 +20,15 @@ const HEADERS = {
   'Accept-Language': 'es-US,es-419;q=0.9,es;q=0.8',
   'Referer': `${BASE_URL}/index.jsp`,
   'Upgrade-Insecure-Requests': '1',
+  'Connection': 'keep-alive',
 };
 
 exports.handler = async (event) => {
-  // Intentar obtener el id: primero query param, luego parsear desde la URL original
+  // Obtener id: query param (del redirect) o desde la URL original
   let paradero = event.queryStringParameters?.id || '';
   if (!paradero && event.rawUrl) {
     try {
-      const pathname = new URL(event.rawUrl).pathname;
-      paradero = pathname.split('/').filter(Boolean).pop() || '';
+      paradero = new URL(event.rawUrl).pathname.split('/').filter(Boolean).pop() || '';
     } catch (_) {}
   }
   paradero = paradero.toUpperCase().trim();
@@ -31,14 +38,24 @@ exports.handler = async (event) => {
   }
 
   try {
-    // 1. Iniciar sesión (obtener cookie)
-    const initRes = await fetch(`${BASE_URL}/index.jsp`, { headers: HEADERS });
-    const cookie  = initRes.headers.get('set-cookie') || '';
+    // 1. Iniciar sesión — obtener cookie de sesión
+    const initRes = await fetch(`${BASE_URL}/index.jsp`, {
+      headers: HEADERS,
+      agent: httpsAgent,
+      redirect: 'follow',
+    });
+    const cookie = initRes.headers.get('set-cookie') || '';
 
     // 2. Consultar paradero
-    const params  = new URLSearchParams({ paradero, servicio: '', button: 'Consulta Paradero' });
+    const params = new URLSearchParams({
+      paradero,
+      servicio: '',
+      button: 'Consulta Paradero',
+    });
     const mainRes = await fetch(`${BASE_URL}/Servlet?${params}`, {
       headers: { ...HEADERS, Cookie: cookie },
+      agent: httpsAgent,
+      redirect: 'follow',
     });
 
     if (!mainRes.ok) {
@@ -47,30 +64,26 @@ exports.handler = async (event) => {
 
     const html = await mainRes.text();
     if (html.length < 100) {
-      return { statusCode: 502, body: JSON.stringify({ error: 'Respuesta de iBUS demasiado corta' }) };
+      return { statusCode: 502, body: JSON.stringify({ error: 'Respuesta de iBUS vacía o inválida' }) };
     }
 
     const $ = load(html);
 
-    // 3. Cabecera
+    // 3. Cabecera (paradero, nombre, hora)
     const datos = {};
     $('table.cabecera4 tr').each((_, row) => {
       const celdas = $(row).find('td');
       if (celdas.length === 3) {
-        const clave = $(celdas[0]).text().trim();
-        const valor = $(celdas[2]).text().trim().replace(/\s+/g, ' ');
-        datos[clave] = valor;
+        datos[$(celdas[0]).text().trim()] = $(celdas[2]).text().trim().replace(/\s+/g, ' ');
       }
     });
 
-    // 4. Servicios
+    // 4. Servicios (recorridos y buses)
     const servicios = [];
     $('tr').each((_, row) => {
       const celdas = $(row).find('td.menu_respuesta');
       if (!celdas.length) return;
-
       const nombre = $(celdas[0]).text().trim();
-
       if (celdas.length === 2) {
         servicios.push({ servicio: nombre, bus: null, tiempo: $(celdas[1]).text().trim(), distancia_metros: null });
       } else if (celdas.length === 4) {
@@ -84,24 +97,22 @@ exports.handler = async (event) => {
       }
     });
 
-    const result = {
-      paradero:      (datos['Paradero'] || paradero).trim(),
-      nombre:        (datos['Nombre']   || '').trim(),
-      hora_consulta: (datos['Hora']     || '').trim(),
-      servicios,
-    };
-
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify(result),
+      body: JSON.stringify({
+        paradero:      (datos['Paradero'] || paradero).trim(),
+        nombre:        (datos['Nombre']   || '').trim(),
+        hora_consulta: (datos['Hora']     || '').trim(),
+        servicios,
+      }),
     };
 
   } catch (err) {
     console.error('paradero error:', err);
     return {
       statusCode: 502,
-      body: JSON.stringify({ error: `Error al consultar iBUS: ${err.message}` }),
+      body: JSON.stringify({ error: `Error al consultar iBUS: ${err.message}`, detail: err.cause?.message }),
     };
   }
 };
