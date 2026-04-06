@@ -13,7 +13,7 @@ Sitio web estático de una sola página que muestra un mapa interactivo del tran
 
 ```
 santiaGO/
-├── public/                  ← todo lo que Netlify sirve
+├── public/                  ← frontend (HTML/CSS/JS estático)
 │   ├── index.html
 │   ├── css/
 │   │   └── main.css
@@ -23,13 +23,14 @@ santiaGO/
 │       ├── estaciones_with_lines.geojson   (100 KB — estaciones de metro)
 │       └── paraderos_santiago.geojson      (3.7 MB — paraderos de bus)
 ├── tools/
-│   └── python/              ← utilidades de desarrollo (no parte del deploy)
+│   └── python/              ← backend (API FastAPI)
 │       ├── api.py
 │       ├── ibus.py
 │       ├── requirements.txt
 │       ├── metro/
 │       └── README.md
-├── netlify.toml
+├── Procfile                 ← para Railway deployment
+├── RAILWAY_DEPLOYMENT.md    ← guía de deploy
 ├── .gitignore
 ├── .env.example
 └── README.md
@@ -96,46 +97,26 @@ fetch('./data/paraderos_santiago.geojson')
 El token en `public/js/main.js` tiene prefijo `pk.` (*public key*):  
 está **diseñado por Mapbox para usarse en el navegador** — no es un secreto.
 
-Sin embargo, para gestión centralizada puedes guardarlo en Netlify:
-
-**Netlify → Site Settings → Environment variables:**
-
-| Variable | Descripción | Ejemplo |
-|---|---|---|
-| `MAPBOX_PUBLIC_TOKEN` | Token público de Mapbox GL | `pk.eyJ1Ijo...` |
-
 Ver `.env.example` para referencia.
 
 ---
 
-## Deploy en Netlify
+## Deploy en Railway
 
-### Configuración mínima
+El proyecto está configurado para desplegar completamente en **Railway.app** (frontend + backend Python).
 
-El archivo `netlify.toml` ya está configurado:
+Ver [`RAILWAY_DEPLOYMENT.md`](RAILWAY_DEPLOYMENT.md) para guía detallada.
 
-```toml
-[build]
-  publish = "public"
+**Resumido:**
+```bash
+npm install -g @railway/cli
+railway login
+railway init
+railway up
 ```
 
-### Pasos
-
-1. Crea un nuevo site en [app.netlify.com](https://app.netlify.com)
-2. Conecta el repositorio (o arrastra la carpeta `public/` a Netlify Drop)
-3. **Publish directory**: `public`
-4. **Build command**: (dejar vacío — no hay build)
-5. Deploy
-
-El sitio queda disponible inmediatamente.
-
-### Variables de entorno en Netlify (opcional)
-
-Si quieres gestionar el token desde Netlify:
-- Site Settings → Environment variables → Add variable
-- `MAPBOX_PUBLIC_TOKEN` = `pk.eyJ1Ijo...`
-
-> Nota: Para que el token sea leído en el HTML estático necesitarías un paso de build (ej. `sed`) o usar Netlify Edge Functions. La configuración actual hardcodea el token en `main.js`, lo cual es aceptable para tokens públicos de Mapbox.
+Tu app estará en vivo en ~2 minutos en una URL como:  
+`https://santia-go-production.up.railway.app`
 
 ---
 
@@ -156,7 +137,7 @@ Estas herramientas son independientes del sitio web y no son requeridas para el 
 
 **Los GeoJSON devuelven 404**
 - Las rutas en `main.js` son `./data/estaciones_with_lines.geojson` — relativas al `index.html`
-- Confirma que Netlify tiene `publish = "public"` (no la raíz)
+- En desarrollo local, asegúrate de servir desde `public/` (no abrir `file://`)
 
 **Popup no muestra datos en tiempo real**
 - La API `api.xor.cl` es externa y puede estar temporalmente caída

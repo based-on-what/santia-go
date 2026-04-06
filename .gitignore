@@ -34,5 +34,5 @@ build/
 Thumbs.db
 desktop.ini
 
-# Netlify
-.netlify/
+# Railway
+.railway/

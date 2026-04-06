@@ -6,7 +6,7 @@
 // Token inyectado desde index.html como window.MAPBOX_TOKEN
 mapboxgl.accessToken = window.MAPBOX_TOKEN;
 
-// Producción (Netlify): rutas relativas /api/... → Netlify Functions
+// Producción (Railway): rutas relativas /api/... → backend Python
 // Desarrollo local: servidor Python en localhost:8000 (python -m uvicorn api:app --reload)
 const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
   ? 'http://localhost:8000'

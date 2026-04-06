@@ -1,7 +1,7 @@
 # Herramientas Python — santiago-red-api
 
-Estas herramientas son **utilitarios de desarrollo** y no forman parte del deploy del sitio web estático.  
-El sitio en `public/` se sirve directamente por Netlify sin depender de ningún proceso Python.
+Estas herramientas son **utilitarios de desarrollo** y también el **backend para producción en Railway**.  
+El sitio en `public/` se sirve junto con este API Python en Railway.
 
 ---
 
@@ -9,7 +9,7 @@ El sitio en `public/` se sirve directamente por Netlify sin depender de ningún 
 
 ```
 tools/python/
-├── api.py            # Servidor REST local (FastAPI) — scraping iBUS en tiempo real
+├── api.py            # Servidor REST (FastAPI) — scraping iBUS + Metro en tiempo real
 ├── ibus.py           # Script CLI standalone — consulta paraderos desde terminal
 ├── requirements.txt  # Dependencias Python
 └── metro/
@@ -31,12 +31,13 @@ pip install -r requirements.txt
 
 ---
 
-## api.py — Servidor REST local (FastAPI)
+## api.py — Servidor REST (FastAPI)
 
-Servidor opcional que expone un endpoint REST para consultar tiempos de llegada de buses.
+Servidor que expone endpoints REST para consultar:
+- Tiempos de llegada de buses (iBUS scraping)
+- Estado de estaciones de metro en tiempo real
 
-> **Nota**: Este servidor **no se puede desplegar directamente en Netlify** (que solo sirve archivos estáticos).  
-> Si necesitas exponerlo online, las opciones son: Railway, Render, Fly.io, o una Netlify Function en Node.js.
+Se despliega automáticamente en Railway.
 
 ```bash
 uvicorn api:app --reload

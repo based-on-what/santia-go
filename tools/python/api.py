@@ -10,6 +10,8 @@ import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -240,3 +242,23 @@ def get_estacion_by_code(code: str):
 
     _enrich_with_schedule(found_station)
     return _station_to_response(found_station, found_line_name)
+
+
+# ── Servir archivos estáticos del frontend ──────────────────────────────────────
+
+# Ruta a la carpeta public donde están los archivos estáticos
+# En Railway: /app/public
+# En local: ../../../public (relativo a tools/python/)
+PUBLIC_DIR = Path(__file__).parent.parent.parent / "public"
+
+if PUBLIC_DIR.exists():
+    # Montar la carpeta public como static files
+    app.mount("/", StaticFiles(directory=str(PUBLIC_DIR), html=True), name="static")
+else:
+    print(f"⚠️  Advertencia: Carpeta public no encontrada en {PUBLIC_DIR}")
+    print("    El frontend no estará disponible")
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
