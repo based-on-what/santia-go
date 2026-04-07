@@ -34,21 +34,34 @@ _SCHEDULE_TTL = 300  # segundos
 
 # ── red.cl ─────────────────────────────────────────────────────────────────────
 
-_RED_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; SantiaGO/3.0)"}
-_RED_TOKEN_CACHE: tuple[float, str] | None = None
+_RED_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "es-CL,es;q=0.9",
+    "Referer": "https://www.red.cl/planifica-tu-viaje/cuando-llega/",
+}
+
+# Caché: (timestamp, token, session)
+_RED_SESSION_CACHE: tuple[float, str, requests.Session] | None = None
 _RED_TOKEN_TTL = 1800  # 30 minutos
 
 
-def _get_red_token() -> str:
-    global _RED_TOKEN_CACHE
+def _get_red_session() -> tuple[str, requests.Session]:
+    """Devuelve (token, session) con cookies activas de red.cl. Cachea por 30 min."""
+    global _RED_SESSION_CACHE
     now = time.time()
-    if _RED_TOKEN_CACHE and now - _RED_TOKEN_CACHE[0] < _RED_TOKEN_TTL:
-        return _RED_TOKEN_CACHE[1]
+    if _RED_SESSION_CACHE and now - _RED_SESSION_CACHE[0] < _RED_TOKEN_TTL:
+        return _RED_SESSION_CACHE[1], _RED_SESSION_CACHE[2]
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": _RED_HEADERS["User-Agent"],
+        "Accept-Language": _RED_HEADERS["Accept-Language"],
+    })
 
     try:
-        res = requests.get(
+        res = session.get(
             "https://www.red.cl/planifica-tu-viaje/cuando-llega/",
-            headers=_RED_HEADERS,
             timeout=15,
         )
         res.raise_for_status()
@@ -64,15 +77,15 @@ def _get_red_token() -> str:
     except Exception:
         token = m.group(1)
 
-    _RED_TOKEN_CACHE = (now, token)
-    return token
+    _RED_SESSION_CACHE = (now, token, session)
+    return token, session
 
 
 def _consultar_paradero_red(paradero: str, servicio: str = "") -> dict:
-    global _RED_TOKEN_CACHE
+    global _RED_SESSION_CACHE
 
-    def _do_request(token: str):
-        return requests.get(
+    def _do_request(token: str, session: requests.Session):
+        return session.get(
             "https://www.red.cl/predictor/prediccion",
             params={"t": token, "codsimt": paradero, "codser": servicio},
             headers=_RED_HEADERS,
@@ -80,11 +93,13 @@ def _consultar_paradero_red(paradero: str, servicio: str = "") -> dict:
         )
 
     try:
-        res = _do_request(_get_red_token())
-        if res.status_code in (401, 403):
-            # Token expirado: forzar renovación y reintentar
-            _RED_TOKEN_CACHE = None
-            res = _do_request(_get_red_token())
+        token, session = _get_red_session()
+        res = _do_request(token, session)
+        if res.status_code in (401, 403, 500):
+            # Sesión o token expirado: forzar renovación y reintentar
+            _RED_SESSION_CACHE = None
+            token, session = _get_red_session()
+            res = _do_request(token, session)
         res.raise_for_status()
         data = res.json()
     except HTTPException:
