@@ -1,25 +1,23 @@
 # api.py
 import sys
 import os
+import re
+import base64
 import time
 
 # Permite importar el paquete 'metro' desde el mismo directorio que api.py
 sys.path.insert(0, os.path.dirname(__file__))
 
 import requests
-from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
-import urllib3
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI(
     title="API local Red de Santiago",
-    description="Paraderos iBUS + Metro de Santiago (desarrollo local)",
-    version="2.0.0"
+    description="Paraderos red.cl + Metro de Santiago (desarrollo local)",
+    version="3.0.0"
 )
 
 app.add_middleware(
@@ -34,91 +32,115 @@ app.add_middleware(
 _station_schedule_cache: dict[str, tuple[float, dict]] = {}
 _SCHEDULE_TTL = 300  # segundos
 
-# ── iBUS ───────────────────────────────────────────────────────────────────────
+# ── red.cl ─────────────────────────────────────────────────────────────────────
 
-_IBUS_BASE_URL = os.environ.get("IBUS_PROXY_URL", "http://m.ibus.cl")
-_IBUS_USE_PROXY = "IBUS_PROXY_URL" in os.environ
-_IBUS_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
-    "Accept-Language": "es-CL,es-419;q=0.9,es;q=0.8,en-US;q=0.7,en;q=0.6",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Cache-Control": "max-age=0",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Connection": "keep-alive",
-}
+_RED_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; SantiaGO/3.0)"}
+_RED_TOKEN_CACHE: tuple[float, str] | None = None
+_RED_TOKEN_TTL = 1800  # 30 minutos
 
 
-def _scrape_paradero(paradero: str, servicio: str = "") -> dict:
-    import time
-    import random
-
-    session = requests.Session()
-    session.headers.update(_IBUS_HEADERS)
-
-    # Cuando se usa proxy (Cloudflare Worker) no hace falta calentar sesión.
-    # Directo al Servlet con timeout reducido para fallar rápido.
-    if not _IBUS_USE_PROXY:
-        try:
-            session.get(f"{_IBUS_BASE_URL}/index.jsp", verify=False, timeout=8)
-            time.sleep(random.uniform(0.5, 1.5))
-        except requests.exceptions.RequestException:
-            pass
-
-    session.headers.update({
-        "Referer": f"{_IBUS_BASE_URL}/index.jsp",
-        "Origin": _IBUS_BASE_URL,
-        "Content-Type": "application/x-www-form-urlencoded",
-    })
-
-    params = {"paradero": paradero, "servicio": servicio, "button": "Consulta Paradero"}
-    timeout = 10 if _IBUS_USE_PROXY else 20
+def _get_red_token() -> str:
+    global _RED_TOKEN_CACHE
+    now = time.time()
+    if _RED_TOKEN_CACHE and now - _RED_TOKEN_CACHE[0] < _RED_TOKEN_TTL:
+        return _RED_TOKEN_CACHE[1]
 
     try:
-        response = session.get(f"{_IBUS_BASE_URL}/Servlet", params=params, verify=False, timeout=timeout)
-    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-        raise HTTPException(status_code=502, detail=f"Timeout al consultar paradero: {str(e)}")
+        res = requests.get(
+            "https://www.red.cl/planifica-tu-viaje/cuando-llega/",
+            headers=_RED_HEADERS,
+            timeout=15,
+        )
+        res.raise_for_status()
     except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Error al consultar paradero en iBUS: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Error al obtener token de red.cl: {e}")
 
-    if response.status_code != 200 or len(response.text) < 100:
-        raise HTTPException(status_code=502, detail="Error al obtener datos de iBUS")
+    m = re.search(r"\$jwt\s*=\s*'([^']+)'", res.text)
+    if not m:
+        raise HTTPException(status_code=502, detail="Token JWT no encontrado en red.cl")
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    try:
+        token = base64.b64decode(m.group(1)).decode("utf-8")
+    except Exception:
+        token = m.group(1)
 
-    datos = {}
-    tabla_cab = soup.find("table", class_="cabecera4")
-    if tabla_cab:
-        for fila in tabla_cab.find_all("tr"):
-            celdas = fila.find_all("td")
-            if len(celdas) == 3:
-                datos[celdas[0].text.strip()] = celdas[2].text.strip().replace("\n", " ").strip()
+    _RED_TOKEN_CACHE = (now, token)
+    return token
+
+
+def _consultar_paradero_red(paradero: str, servicio: str = "") -> dict:
+    global _RED_TOKEN_CACHE
+
+    def _do_request(token: str):
+        return requests.get(
+            "https://www.red.cl/predictor/prediccion",
+            params={"t": token, "codsimt": paradero, "codser": servicio},
+            headers=_RED_HEADERS,
+            timeout=15,
+        )
+
+    try:
+        res = _do_request(_get_red_token())
+        if res.status_code in (401, 403):
+            # Token expirado: forzar renovación y reintentar
+            _RED_TOKEN_CACHE = None
+            res = _do_request(_get_red_token())
+        res.raise_for_status()
+        data = res.json()
+    except HTTPException:
+        raise
+    except requests.exceptions.Timeout:
+        raise HTTPException(status_code=502, detail="Timeout al consultar red.cl")
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Error al consultar red.cl: {e}")
+
+    hora_consulta = data.get("horaprediccion", "")
+    items = data.get("servicios", {}).get("item", [])
+    if isinstance(items, dict):
+        items = [items]
+
+    _MSG = {
+        "9":  lambda item: item.get("respuestaServicio", "Servicio frecuente"),
+        "10": lambda _: "Sin recorridos hacia este paradero",
+        "11": lambda _: "Paradero fuera de horario de operación",
+        "12": lambda _: "Servicio no disponible",
+    }
 
     servicios = []
-    for fila in soup.find_all("tr"):
-        celdas = fila.find_all("td", class_="menu_respuesta")
-        if not celdas:
-            continue
-        nombre_svc = celdas[0].text.strip()
-        if len(celdas) == 2:
-            servicios.append({"servicio": nombre_svc, "bus": None, "tiempo": celdas[1].text.strip(), "distancia_metros": None})
-        elif len(celdas) == 4:
-            dist = celdas[3].text.strip()
+    for item in items:
+        code = str(item.get("codigorespuesta", ""))
+        svc = item.get("servicio", "")
+
+        if code == "00":  # 2 buses en camino
+            for n in ("1", "2"):
+                dist = item.get(f"distanciabus{n}")
+                servicios.append({
+                    "servicio": svc,
+                    "bus": item.get(f"ppubus{n}"),
+                    "tiempo": item.get(f"horaprediccionbus{n}", ""),
+                    "distancia_metros": int(dist) if dist else None,
+                })
+        elif code == "01":  # 1 bus en camino
+            dist = item.get("distanciabus1")
             servicios.append({
-                "servicio": nombre_svc,
-                "bus": celdas[1].text.strip(),
-                "tiempo": celdas[2].text.strip(),
-                "distancia_metros": int(dist) if dist.isdigit() else None
+                "servicio": svc,
+                "bus": item.get("ppubus1"),
+                "tiempo": item.get("horaprediccionbus1", ""),
+                "distancia_metros": int(dist) if dist else None,
+            })
+        else:
+            fn = _MSG.get(code, lambda i: i.get("respuestaServicio", "Sin información"))
+            servicios.append({
+                "servicio": svc,
+                "bus": None,
+                "tiempo": fn(item),
+                "distancia_metros": None,
             })
 
     return {
-        "paradero": datos.get("Paradero", paradero).strip(),
-        "nombre": datos.get("Nombre", "").strip(),
-        "hora_consulta": datos.get("Hora", "").strip(),
+        "paradero": paradero,
+        "nombre": paradero,
+        "hora_consulta": hora_consulta,
         "servicios": servicios,
     }
 
@@ -188,19 +210,19 @@ def health_check():
     return {"mensaje": "API local Red Santiago funcionando", "docs": "/docs"}
 
 
-@app.get("/api/paradero/{paradero}", summary="Buses en tiempo real para un paradero (iBUS)")
+@app.get("/api/paradero/{paradero}", summary="Buses en tiempo real para un paradero (red.cl)")
 @app.get("/paradero/{paradero}", include_in_schema=False)
 def consultar_paradero(
     paradero: str,
     servicio: str = Query(default="", description="Filtrar por línea de bus (ej: 506)")
 ):
     """
-    Scraping de m.ibus.cl para obtener los próximos buses de un paradero.
+    Consulta los próximos buses de un paradero vía red.cl.
 
     - **paradero**: código del paradero (ej: PA443)
     - **servicio**: opcional, filtra por línea
     """
-    return _scrape_paradero(paradero.upper().strip(), servicio)
+    return _consultar_paradero_red(paradero.upper().strip(), servicio)
 
 
 @app.get("/api/metro-network", summary="Estado completo de la red de metro (con prefijo /api)")
