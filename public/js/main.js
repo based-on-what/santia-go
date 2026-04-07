@@ -211,9 +211,11 @@ const App = (() => {
         html += `<div style="margin-bottom:8px;padding:8px;background:#f8f8f8;border-radius:4px">
           <div style="color:${color};font-weight:600">Recorrido ${svc.servicio}</div>`;
         if (hasBus) {
+          const distancia = svc.distancia_metros ?? svc.distancia ?? null;
           html += `<div style="font-size:0.85em;margin-top:4px">
             🚌 <strong>${svc.bus}</strong><br>
-            ⏱ ${svc.tiempo}${svc.distancia_metros ? ` — ${svc.distancia_metros}m` : ''}
+            ⏱ ${svc.tiempo}<br>
+            ${distancia != null ? `📍 ${distancia}m` : ''}
           </div>`;
         } else {
           html += `<div style="font-size:0.85em;color:#666;margin-top:4px">${svc.tiempo}</div>`;
