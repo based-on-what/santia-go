@@ -99,61 +99,24 @@ function serialize(inputData) {
 
 // ── red.cl helpers ────────────────────────────────────────────────────────────
 
-const BROWSER_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Accept-Language': 'es-CL,es;q=0.9',
+async function getToken() {
+  const res = await fetch('https://www.red.cl/planifica-tu-viaje/cuando-llega/')
+  if (!res.ok) throw new Error(`Página de token: HTTP ${res.status}`)
+  const text = await res.text()
+  const m = /\$jwt\s=\s'([^']+)'/.exec(text)
+  if (!m) throw new Error('Token JWT no encontrado en la página de red.cl')
+  return atob(m[1])
 }
 
-async function getTokenAndCookies() {
-  const response = await fetch('https://www.red.cl/planifica-tu-viaje/cuando-llega/', {
-    headers: {
-      ...BROWSER_HEADERS,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    }
-  })
-
-  if (!response.ok) {
-    throw new Error(`red.cl devolvió ${response.status} al obtener la página del token`)
-  }
-
-  // Extraer cookies de sesión para reenviarlas al predictor
-  const cookies = []
-  for (const [key, value] of response.headers.entries()) {
-    if (key.toLowerCase() === 'set-cookie') {
-      cookies.push(value.split(';')[0]) // solo name=value
-    }
-  }
-
-  const text = await response.text()
-  const regex = /\$jwt\s=\s'([^']+)'/
-  const match = regex.exec(text)
-  if (!match) {
-    throw new Error('Token JWT no encontrado en red.cl')
-  }
-
-  const token = atob(match[1])
-  return { token, cookieHeader: cookies.join('; ') }
-}
-
-async function getArrivalData(token, cookieHeader, stopId) {
-  const headers = {
-    ...BROWSER_HEADERS,
-    'Accept': 'application/json, text/plain, */*',
-    'Referer': 'https://www.red.cl/planifica-tu-viaje/cuando-llega/',
-  }
-  if (cookieHeader) headers['Cookie'] = cookieHeader
-
-  const response = await fetch(
-    `https://www.red.cl/predictor/prediccion?t=${token}&codsimt=${stopId}&codser=`,
-    { headers }
+async function getArrivalData(token, stopId) {
+  const res = await fetch(
+    `https://www.red.cl/predictor/prediccion?t=${token}&codsimt=${stopId}&codser=`
   )
-
-  if (!response.ok) {
-    const body = await response.text()
-    throw new Error(`Predictor red.cl devolvió ${response.status}: ${body.slice(0, 150)}`)
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`Predictor HTTP ${res.status}: ${body.slice(0, 200)}`)
   }
-
-  const data = await response.json()
+  const data = await res.json()
   return serialize(data)
 }
 
@@ -183,13 +146,33 @@ async function handleRequest(request) {
     return new Response('red-proxy ok', { status: 200, headers: corsHeaders() })
   }
 
+  // GET /debug/:stopId  →  muestra la respuesta cruda de red.cl sin serializar
+  const debugMatch = pathname.match(/^\/debug\/([^/]+)$/)
+  if (request.method === 'GET' && debugMatch) {
+    try {
+      const stopId = debugMatch[1].toUpperCase()
+      const token = await getToken()
+      const predUrl = `https://www.red.cl/predictor/prediccion?t=${token}&codsimt=${stopId}&codser=`
+      const res = await fetch(predUrl)
+      const body = await res.text()
+      return new Response(
+        JSON.stringify({ status: res.status, token_preview: token.slice(0, 30), url: predUrl, body }),
+        { status: 200, headers: { ...corsHeaders(), 'Content-Type': 'application/json' } }
+      )
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message }), {
+        status: 500, headers: { ...corsHeaders(), 'Content-Type': 'application/json' }
+      })
+    }
+  }
+
   // GET /stops/:stopId/next_arrivals
   const match = pathname.match(/^\/stops\/([^/]+)\/next_arrivals$/)
   if (request.method === 'GET' && match) {
     try {
       const stopId = match[1].toUpperCase()
-      const { token, cookieHeader } = await getTokenAndCookies()
-      const data = await getArrivalData(token, cookieHeader, stopId)
+      const token = await getToken()
+      const data  = await getArrivalData(token, stopId)
       return new Response(JSON.stringify(data), {
         status: 200,
         headers: { ...corsHeaders(), 'Content-Type': 'application/json' },
