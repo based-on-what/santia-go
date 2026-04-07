@@ -339,7 +339,9 @@ const App = (() => {
             updatePopupContent(createBusStopPopupContent(data), marker);
           } else if (res.status === 502) {
             const err = await res.json().catch(() => ({}));
-            const msg = err.detail || `Error al obtener datos de paradero (${res.status})`;
+            const msg = (err.detail || '').includes('ibus') || (err.detail || '').includes('iBUS') || (err.detail || '').includes('m.ibus.cl')
+              ? 'Servicio iBUS no disponible en este momento.'
+              : `Error al obtener datos de paradero (${res.status})`;
             updatePopupContent(`<div style="color:#888">${msg}</div>`, marker);
           } else {
             updatePopupContent(`<div>Error al obtener datos de paradero (${res.status})</div>`, marker);

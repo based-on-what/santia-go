@@ -1,14 +1,13 @@
 # api.py
 import sys
 import os
-import re
-import base64
 import time
 
 # Permite importar el paquete 'metro' desde el mismo directorio que api.py
 sys.path.insert(0, os.path.dirname(__file__))
 
 import requests
+from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -16,7 +15,7 @@ from pathlib import Path
 
 app = FastAPI(
     title="API local Red de Santiago",
-    description="Paraderos red.cl + Metro de Santiago (desarrollo local)",
+    description="Paraderos red.cl (vía Cloudflare Worker) + Metro de Santiago",
     version="3.0.0"
 )
 
@@ -32,82 +31,54 @@ app.add_middleware(
 _station_schedule_cache: dict[str, tuple[float, dict]] = {}
 _SCHEDULE_TTL = 300  # segundos
 
-# ── red.cl ─────────────────────────────────────────────────────────────────────
+# ── red.cl vía Cloudflare Worker ───────────────────────────────────────────────
+# Configurar en Railway: RED_API_URL=https://red-proxy.TU_USUARIO.workers.dev
 
-_RED_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "es-CL,es;q=0.9",
-    "Referer": "https://www.red.cl/planifica-tu-viaje/cuando-llega/",
-}
-
-# Caché: (timestamp, token, session)
-_RED_SESSION_CACHE: tuple[float, str, requests.Session] | None = None
-_RED_TOKEN_TTL = 1800  # 30 minutos
+_RED_API_URL = os.environ.get("RED_API_URL", "").rstrip("/")
 
 
-def _get_red_session() -> tuple[str, requests.Session]:
-    """Devuelve (token, session) con cookies activas de red.cl. Cachea por 30 min."""
-    global _RED_SESSION_CACHE
-    now = time.time()
-    if _RED_SESSION_CACHE and now - _RED_SESSION_CACHE[0] < _RED_TOKEN_TTL:
-        return _RED_SESSION_CACHE[1], _RED_SESSION_CACHE[2]
-
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": _RED_HEADERS["User-Agent"],
-        "Accept-Language": _RED_HEADERS["Accept-Language"],
-    })
-
-    try:
-        res = session.get(
-            "https://www.red.cl/planifica-tu-viaje/cuando-llega/",
-            timeout=15,
-        )
-        res.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Error al obtener token de red.cl: {e}")
-
-    m = re.search(r"\$jwt\s*=\s*'([^']+)'", res.text)
-    if not m:
-        raise HTTPException(status_code=502, detail="Token JWT no encontrado en red.cl")
-
-    try:
-        token = base64.b64decode(m.group(1)).decode("utf-8")
-    except Exception:
-        token = m.group(1)
-
-    _RED_SESSION_CACHE = (now, token, session)
-    return token, session
-
-
-def _consultar_paradero_red(paradero: str, servicio: str = "") -> dict:
-    global _RED_SESSION_CACHE
-
-    def _do_request(token: str, session: requests.Session):
-        return session.get(
-            "https://www.red.cl/predictor/prediccion",
-            params={"t": token, "codsimt": paradero, "codser": servicio},
-            headers=_RED_HEADERS,
-            timeout=15,
+def _consultar_paradero(paradero: str) -> dict:
+    if not _RED_API_URL:
+        raise HTTPException(
+            status_code=503,
+            detail="RED_API_URL no configurada. Deploy red-worker.js en Cloudflare y setea la variable."
         )
 
+    url = f"{_RED_API_URL}/stops/{paradero}/next_arrivals"
     try:
-        token, session = _get_red_session()
-        res = _do_request(token, session)
-        if res.status_code in (401, 403, 500):
-            # Sesión o token expirado: forzar renovación y reintentar
-            _RED_SESSION_CACHE = None
-            token, session = _get_red_session()
-            res = _do_request(token, session)
+        res = requests.get(url, timeout=15)
         res.raise_for_status()
         data = res.json()
-    except HTTPException:
-        raise
     except requests.exceptions.Timeout:
-        raise HTTPException(status_code=502, detail="Timeout al consultar red.cl")
+        raise HTTPException(status_code=502, detail="Timeout al consultar el Worker de red.cl")
     except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Error al consultar red.cl: {e}")
+        raise HTTPException(status_code=502, detail=f"Error al consultar el Worker de red.cl: {e}")
+
+    results = data.get("results", [])
+
+    # Extraer hora_consulta del primer resultado (ej: "07/04/2026 15:25:00" → "15:25:00")
+    hora_consulta = ""
+    if results and results[0].get("calculated_at"):
+        parts = results[0]["calculated_at"].split(" ")
+        if len(parts) >= 2:
+            hora_consulta = parts[1]
+
+    servicios = []
+    for r in results:
+        dist = r.get("bus_distance")
+        servicios.append({
+            "servicio":         r.get("route_id", ""),
+            "bus":              r.get("bus_plate_number"),
+            "tiempo":           r.get("arrival_estimation") or r.get("message", "Sin información"),
+            "distancia_metros": int(dist) if dist is not None else None,
+        })
+
+    return {
+        "paradero":     paradero,
+        "nombre":       paradero,
+        "hora_consulta": hora_consulta,
+        "servicios":    servicios,
+    }
 
     hora_consulta = data.get("horaprediccion", "")
     items = data.get("servicios", {}).get("item", [])
@@ -232,12 +203,12 @@ def consultar_paradero(
     servicio: str = Query(default="", description="Filtrar por línea de bus (ej: 506)")
 ):
     """
-    Consulta los próximos buses de un paradero vía red.cl.
+    Consulta los próximos buses de un paradero vía Cloudflare Worker → red.cl.
 
     - **paradero**: código del paradero (ej: PA443)
-    - **servicio**: opcional, filtra por línea
+    - **servicio**: no usado (red.cl no soporta filtro por línea en este endpoint)
     """
-    return _consultar_paradero_red(paradero.upper().strip(), servicio)
+    return _consultar_paradero(paradero.upper().strip())
 
 
 @app.get("/api/metro-network", summary="Estado completo de la red de metro (con prefijo /api)")
