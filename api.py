@@ -3,20 +3,18 @@ import sys
 import os
 import time
 
-# Permite importar el paquete 'metro' desde el mismo directorio que api.py
 sys.path.insert(0, os.path.dirname(__file__))
 
 import requests
-from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 app = FastAPI(
-    title="API local Red de Santiago",
-    description="Paraderos red.cl (vía Cloudflare Worker) + Metro de Santiago",
-    version="3.0.0"
+    title="API Red de Santiago",
+    description="Paraderos iBUS + Metro de Santiago",
+    version="4.0.0"
 )
 
 app.add_middleware(
@@ -26,120 +24,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Caché en memoria para horarios de estaciones (TTL: 5 min) ─────────────────
-# { codigo_estacion: (timestamp_float, dict_resultado) }
 _station_schedule_cache: dict[str, tuple[float, dict]] = {}
-_SCHEDULE_TTL = 300  # segundos
+_SCHEDULE_TTL = 300
 
-# ── red.cl vía Cloudflare Worker ───────────────────────────────────────────────
-# Configurar en Railway: RED_API_URL=https://red-proxy.TU_USUARIO.workers.dev
-
-_RED_API_URL = os.environ.get("RED_API_URL", "").rstrip("/")
 _IBUS_PROXY_URL = os.environ.get("IBUS_PROXY_URL", "").rstrip("/")
-
-
-def _consultar_paradero(paradero: str) -> dict:
-    if not _RED_API_URL:
-        raise HTTPException(
-            status_code=503,
-            detail="RED_API_URL no configurada. Deploy red-worker.js en Cloudflare y setea la variable."
-        )
-
-    url = f"{_RED_API_URL}/stops/{paradero}/next_arrivals"
-    try:
-        res = requests.get(url, timeout=15)
-        res.raise_for_status()
-        data = res.json()
-    except requests.exceptions.Timeout:
-        raise HTTPException(status_code=502, detail="Timeout al consultar el Worker de red.cl")
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Error al consultar el Worker de red.cl: {e}")
-
-    results = data.get("results", [])
-
-    # Extraer hora_consulta del primer resultado (ej: "07/04/2026 15:25:00" → "15:25:00")
-    hora_consulta = ""
-    if results and results[0].get("calculated_at"):
-        parts = results[0]["calculated_at"].split(" ")
-        if len(parts) >= 2:
-            hora_consulta = parts[1]
-
-    servicios = []
-    for r in results:
-        dist = r.get("bus_distance")
-        servicios.append({
-            "servicio":         r.get("route_id", ""),
-            "bus":              r.get("bus_plate_number"),
-            "tiempo":           r.get("arrival_estimation") or r.get("message", "Sin información"),
-            "distancia_metros": int(dist) if dist is not None else None,
-        })
-
-    return {
-        "paradero":     paradero,
-        "nombre":       paradero,
-        "hora_consulta": hora_consulta,
-        "servicios":    servicios,
-    }
-
-    hora_consulta = data.get("horaprediccion", "")
-    items = data.get("servicios", {}).get("item", [])
-    if isinstance(items, dict):
-        items = [items]
-
-    _MSG = {
-        "9":  lambda item: item.get("respuestaServicio", "Servicio frecuente"),
-        "10": lambda _: "Sin recorridos hacia este paradero",
-        "11": lambda _: "Paradero fuera de horario de operación",
-        "12": lambda _: "Servicio no disponible",
-    }
-
-    servicios = []
-    for item in items:
-        code = str(item.get("codigorespuesta", ""))
-        svc = item.get("servicio", "")
-
-        if code == "00":  # 2 buses en camino
-            for n in ("1", "2"):
-                dist = item.get(f"distanciabus{n}")
-                servicios.append({
-                    "servicio": svc,
-                    "bus": item.get(f"ppubus{n}"),
-                    "tiempo": item.get(f"horaprediccionbus{n}", ""),
-                    "distancia_metros": int(dist) if dist else None,
-                })
-        elif code == "01":  # 1 bus en camino
-            dist = item.get("distanciabus1")
-            servicios.append({
-                "servicio": svc,
-                "bus": item.get("ppubus1"),
-                "tiempo": item.get("horaprediccionbus1", ""),
-                "distancia_metros": int(dist) if dist else None,
-            })
-        else:
-            fn = _MSG.get(code, lambda i: i.get("respuestaServicio", "Sin información"))
-            servicios.append({
-                "servicio": svc,
-                "bus": None,
-                "tiempo": fn(item),
-                "distancia_metros": None,
-            })
-
-    return {
-        "paradero": paradero,
-        "nombre": paradero,
-        "hora_consulta": hora_consulta,
-        "servicios": servicios,
-    }
 
 
 # ── iBUS vía proxy local (Cloudflare Tunnel) ──────────────────────────────────
 
-def _consultar_ibus(paradero: str) -> dict:
+def _consultar_paradero(paradero: str) -> dict:
     if not _IBUS_PROXY_URL:
-        raise HTTPException(
-            status_code=503,
-            detail="IBUS_PROXY_URL no configurada."
-        )
+        raise HTTPException(status_code=503, detail="IBUS_PROXY_URL no configurada.")
     try:
         res = requests.get(f"{_IBUS_PROXY_URL}/paradero/{paradero}", timeout=20)
         res.raise_for_status()
@@ -153,7 +48,6 @@ def _consultar_ibus(paradero: str) -> dict:
 # ── Metro helpers ──────────────────────────────────────────────────────────────
 
 def _get_network():
-    """Devuelve NetworkStatus desde caché de archivo o scraping fresco."""
     from metro.cache import load_cache, save_cache
     from metro.scraper import fetch_network_status
 
@@ -167,7 +61,6 @@ def _get_network():
 
 
 def _station_to_response(station, line_name: str) -> dict:
-    """Serializa una Station a dict apto para JSON."""
     from metro.cache import _schedule_to_dict, _train_to_dict
     return {
         "code": station.code,
@@ -185,7 +78,6 @@ def _station_to_response(station, line_name: str) -> dict:
 
 
 def _enrich_with_schedule(station) -> None:
-    """Agrega horarios a la estación; usa caché en memoria."""
     from metro.scraper import fetch_station_schedule
 
     key = station.code.upper()
@@ -194,17 +86,12 @@ def _enrich_with_schedule(station) -> None:
     if key in _station_schedule_cache:
         cached_at, _ = _station_schedule_cache[key]
         if now - cached_at < _SCHEDULE_TTL:
-            # Ya cacheado y fresco — solo recuperar los objetos
-            sched_cached = _station_schedule_cache[key][1]
-            # El objeto station ya tendrá el schedule si fue enriquecido antes;
-            # si no, lo reconstruimos en el endpoint desde el dict cacheado.
             return
 
     sched, term_a, term_b = fetch_station_schedule(station.code)
     station.schedule = sched
     station.terminal_a = term_a
     station.terminal_b = term_b
-    # Guardar marca de tiempo (el dict completo se arma en el endpoint)
     _station_schedule_cache[key] = (now, {})
 
 
@@ -212,36 +99,18 @@ def _enrich_with_schedule(station) -> None:
 
 @app.get("/api/health")
 def health_check():
-    return {"mensaje": "API local Red Santiago funcionando", "docs": "/docs"}
+    return {"mensaje": "API Red Santiago funcionando", "docs": "/docs"}
 
 
-@app.get("/api/paradero/{paradero}", summary="Buses en tiempo real para un paradero (red.cl)")
+@app.get("/api/paradero/{paradero}", summary="Buses en tiempo real para un paradero (iBUS)")
 @app.get("/paradero/{paradero}", include_in_schema=False)
-def consultar_paradero(
-    paradero: str,
-    servicio: str = Query(default="", description="Filtrar por línea de bus (ej: 506)")
-):
-    """
-    Consulta los próximos buses de un paradero vía Cloudflare Worker → red.cl.
-
-    - **paradero**: código del paradero (ej: PA443)
-    - **servicio**: no usado (red.cl no soporta filtro por línea en este endpoint)
-    """
+def consultar_paradero(paradero: str):
     return _consultar_paradero(paradero.upper().strip())
 
 
-@app.get("/api/ibus/{paradero}", summary="Buses en tiempo real para un paradero (iBUS)")
-def consultar_ibus(paradero: str):
-    return _consultar_ibus(paradero.upper().strip())
-
-
-@app.get("/api/metro-network", summary="Estado completo de la red de metro (con prefijo /api)")
+@app.get("/api/metro-network", summary="Estado completo de la red de metro")
 @app.get("/metro-network", include_in_schema=False)
 def get_metro_network():
-    """
-    Estado operacional de todas las líneas y estaciones (sin horarios).
-    Caché en archivo, TTL 5 minutos.
-    """
     from metro.cache import _network_to_dict
     return _network_to_dict(_get_network())
 
@@ -251,17 +120,7 @@ def get_metro_network():
 def get_estacion(
     nombre: str = Query(..., description="Nombre exacto de la estación (ej: Baquedano)"),
 ):
-    """
-    Devuelve estado + horarios de apertura/cierre + trenes de una estación.
-
-    - **nombre**: nombre exacto como aparece en el GeoJSON (ej: `Baquedano`, `U. de Chile`)
-
-    Combina `/api/estadoRedDetalle.php` + `/api/horariosEstacion.php`.
-    Los horarios se cachean en memoria por 5 minutos.
-    """
     network = _get_network()
-
-    # Buscar estación por nombre (insensible a mayúsculas)
     nombre_lower = nombre.strip().lower()
     found_station = None
     found_line_name = ""
@@ -277,20 +136,14 @@ def get_estacion(
     if not found_station:
         raise HTTPException(status_code=404, detail=f"Estación '{nombre}' no encontrada en la red")
 
-    # Enriquecer con horarios (con caché en memoria)
     _enrich_with_schedule(found_station)
-
     return _station_to_response(found_station, found_line_name)
 
 
 @app.get("/api/metro/estacion/{code}", summary="Detalle de una estación por código")
 @app.get("/metro/estacion/{code}", include_in_schema=False)
 def get_estacion_by_code(code: str):
-    """
-    Devuelve estado + horarios de una estación por su código (ej: `BA` para Baquedano).
-    """
     network = _get_network()
-
     code_upper = code.upper().strip()
     found_station = None
     found_line_name = ""
@@ -310,19 +163,14 @@ def get_estacion_by_code(code: str):
     return _station_to_response(found_station, found_line_name)
 
 
-# ── Servir archivos estáticos del frontend ──────────────────────────────────────
+# ── Archivos estáticos ─────────────────────────────────────────────────────────
 
-# Ruta a la carpeta public donde están los archivos estáticos
-# En Railway: /app/public
-# En local: ./public (relativo a la raíz del proyecto)
 PUBLIC_DIR = Path(__file__).parent / "public"
 
 if PUBLIC_DIR.exists():
-    # Montar la carpeta public como static files
     app.mount("/", StaticFiles(directory=str(PUBLIC_DIR), html=True), name="static")
 else:
-    print(f"⚠️  Advertencia: Carpeta public no encontrada en {PUBLIC_DIR}")
-    print("    El frontend no estará disponible")
+    print(f"Advertencia: Carpeta public no encontrada en {PUBLIC_DIR}")
 
 if __name__ == "__main__":
     import uvicorn
