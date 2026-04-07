@@ -99,23 +99,60 @@ function serialize(inputData) {
 
 // ── red.cl helpers ────────────────────────────────────────────────────────────
 
-async function getToken() {
-  const response = await fetch('https://www.red.cl/planifica-tu-viaje/cuando-llega/')
-  const text = await response.text()
-  const regex = /\$jwt\s=\s'(.*)'/gm
-  let token = null
-  let m = null
-  while ((m = regex.exec(text)) !== null) {
-    if (m.index === regex.lastIndex) regex.lastIndex++
-    m.forEach(match => { token = match })
-  }
-  return atob(token)
+const BROWSER_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept-Language': 'es-CL,es;q=0.9',
 }
 
-async function getArrivalData(token, stopId) {
+async function getTokenAndCookies() {
+  const response = await fetch('https://www.red.cl/planifica-tu-viaje/cuando-llega/', {
+    headers: {
+      ...BROWSER_HEADERS,
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    }
+  })
+
+  if (!response.ok) {
+    throw new Error(`red.cl devolvió ${response.status} al obtener la página del token`)
+  }
+
+  // Extraer cookies de sesión para reenviarlas al predictor
+  const cookies = []
+  for (const [key, value] of response.headers.entries()) {
+    if (key.toLowerCase() === 'set-cookie') {
+      cookies.push(value.split(';')[0]) // solo name=value
+    }
+  }
+
+  const text = await response.text()
+  const regex = /\$jwt\s=\s'([^']+)'/
+  const match = regex.exec(text)
+  if (!match) {
+    throw new Error('Token JWT no encontrado en red.cl')
+  }
+
+  const token = atob(match[1])
+  return { token, cookieHeader: cookies.join('; ') }
+}
+
+async function getArrivalData(token, cookieHeader, stopId) {
+  const headers = {
+    ...BROWSER_HEADERS,
+    'Accept': 'application/json, text/plain, */*',
+    'Referer': 'https://www.red.cl/planifica-tu-viaje/cuando-llega/',
+  }
+  if (cookieHeader) headers['Cookie'] = cookieHeader
+
   const response = await fetch(
-    `https://www.red.cl/predictor/prediccion?t=${token}&codsimt=${stopId}&codser=`
+    `https://www.red.cl/predictor/prediccion?t=${token}&codsimt=${stopId}&codser=`,
+    { headers }
   )
+
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(`Predictor red.cl devolvió ${response.status}: ${body.slice(0, 150)}`)
+  }
+
   const data = await response.json()
   return serialize(data)
 }
@@ -151,8 +188,8 @@ async function handleRequest(request) {
   if (request.method === 'GET' && match) {
     try {
       const stopId = match[1].toUpperCase()
-      const token = await getToken()
-      const data  = await getArrivalData(token, stopId)
+      const { token, cookieHeader } = await getTokenAndCookies()
+      const data = await getArrivalData(token, cookieHeader, stopId)
       return new Response(JSON.stringify(data), {
         status: 200,
         headers: { ...corsHeaders(), 'Content-Type': 'application/json' },
