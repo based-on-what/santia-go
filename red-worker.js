@@ -99,25 +99,19 @@ function serialize(inputData) {
 
 // ── red.cl helpers ────────────────────────────────────────────────────────────
 
-async function getToken() {
-  const res = await fetch('https://www.red.cl/planifica-tu-viaje/cuando-llega/')
-  if (!res.ok) throw new Error(`Página de token: HTTP ${res.status}`)
-  const text = await res.text()
-  const m = /\$jwt\s=\s'([^']+)'/.exec(text)
-  if (!m) throw new Error('Token JWT no encontrado en la página de red.cl')
-  return atob(m[1])
-}
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
-async function getArrivalData(token, stopId) {
+async function getArrivalData(stopId) {
   const res = await fetch(
-    `https://www.red.cl/predictor/prediccion?t=${token}&codsimt=${stopId}&codser=`
+    `https://www.scltrans.it/v2/stops/${stopId}/next_arrival_times`,
+    { headers: { 'User-Agent': UA, 'Accept': 'application/json' } }
   )
   if (!res.ok) {
     const body = await res.text()
-    throw new Error(`Predictor HTTP ${res.status}: ${body.slice(0, 200)}`)
+    throw new Error(`scltrans.it HTTP ${res.status}: ${body.slice(0, 300)}`)
   }
-  const data = await res.json()
-  return serialize(data)
+  // scltrans.it devuelve directamente { results: [...] } — mismo formato que red-api
+  return res.json()
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -146,17 +140,16 @@ async function handleRequest(request) {
     return new Response('red-proxy ok', { status: 200, headers: corsHeaders() })
   }
 
-  // GET /debug/:stopId  →  muestra la respuesta cruda de red.cl sin serializar
+  // GET /debug/:stopId  →  muestra la respuesta cruda de scltrans.it sin serializar
   const debugMatch = pathname.match(/^\/debug\/([^/]+)$/)
   if (request.method === 'GET' && debugMatch) {
     try {
       const stopId = debugMatch[1].toUpperCase()
-      const token = await getToken()
-      const predUrl = `https://www.red.cl/predictor/prediccion?t=${token}&codsimt=${stopId}&codser=`
-      const res = await fetch(predUrl)
+      const url = `https://www.scltrans.it/v2/stops/${stopId}/next_arrival_times`
+      const res = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } })
       const body = await res.text()
       return new Response(
-        JSON.stringify({ status: res.status, token_preview: token.slice(0, 30), url: predUrl, body }),
+        JSON.stringify({ status: res.status, url, body }),
         { status: 200, headers: { ...corsHeaders(), 'Content-Type': 'application/json' } }
       )
     } catch (err) {
@@ -171,8 +164,7 @@ async function handleRequest(request) {
   if (request.method === 'GET' && match) {
     try {
       const stopId = match[1].toUpperCase()
-      const token = await getToken()
-      const data  = await getArrivalData(token, stopId)
+      const data = await getArrivalData(stopId)
       return new Response(JSON.stringify(data), {
         status: 200,
         headers: { ...corsHeaders(), 'Content-Type': 'application/json' },

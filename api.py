@@ -35,6 +35,7 @@ _SCHEDULE_TTL = 300  # segundos
 # Configurar en Railway: RED_API_URL=https://red-proxy.TU_USUARIO.workers.dev
 
 _RED_API_URL = os.environ.get("RED_API_URL", "").rstrip("/")
+_IBUS_PROXY_URL = os.environ.get("IBUS_PROXY_URL", "").rstrip("/")
 
 
 def _consultar_paradero(paradero: str) -> dict:
@@ -131,6 +132,24 @@ def _consultar_paradero(paradero: str) -> dict:
     }
 
 
+# ── iBUS vía proxy local (Cloudflare Tunnel) ──────────────────────────────────
+
+def _consultar_ibus(paradero: str) -> dict:
+    if not _IBUS_PROXY_URL:
+        raise HTTPException(
+            status_code=503,
+            detail="IBUS_PROXY_URL no configurada."
+        )
+    try:
+        res = requests.get(f"{_IBUS_PROXY_URL}/paradero/{paradero}", timeout=20)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.Timeout:
+        raise HTTPException(status_code=504, detail="Timeout al consultar el proxy iBUS")
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Error al consultar el proxy iBUS: {e}")
+
+
 # ── Metro helpers ──────────────────────────────────────────────────────────────
 
 def _get_network():
@@ -209,6 +228,11 @@ def consultar_paradero(
     - **servicio**: no usado (red.cl no soporta filtro por línea en este endpoint)
     """
     return _consultar_paradero(paradero.upper().strip())
+
+
+@app.get("/api/ibus/{paradero}", summary="Buses en tiempo real para un paradero (iBUS)")
+def consultar_ibus(paradero: str):
+    return _consultar_ibus(paradero.upper().strip())
 
 
 @app.get("/api/metro-network", summary="Estado completo de la red de metro (con prefijo /api)")
