@@ -13,6 +13,53 @@ const API_BASE = (window.location.hostname === 'localhost' || window.location.ho
   : '/api';
 
 const ROUTE_COLORS  = ['#FF0000', '#008000', '#0000FF'];
+
+/* ── Metro line color palette (matches official Transantiago branding) ── */
+const METRO_LINE_COLORS = {
+  L1:  { bg: 'oklch(97% 0.035 25)',  fg: 'oklch(49% 0.24 25)'  },
+  L2:  { bg: 'oklch(98% 0.055 82)',  fg: 'oklch(54% 0.22 75)'  },
+  L3:  { bg: 'oklch(97% 0.035 52)',  fg: 'oklch(46% 0.18 52)'  },
+  L4:  { bg: 'oklch(96% 0.035 230)', fg: 'oklch(41% 0.20 230)' },
+  L4A: { bg: 'oklch(96% 0.030 245)', fg: 'oklch(38% 0.18 245)' },
+  L5:  { bg: 'oklch(96% 0.035 145)', fg: 'oklch(43% 0.20 145)' },
+  L6:  { bg: 'oklch(96% 0.035 305)', fg: 'oklch(42% 0.19 305)' },
+};
+
+/* ── Popup HTML constants ────────────────────────────────────────────── */
+const LOADING_BUS_HTML = `
+  <div class="popup-skeleton" aria-label="Cargando datos del paradero">
+    <div class="skel skel--wide"></div>
+    <div class="skel skel--short skel--sm"></div>
+    <div class="skel skel--lg"></div>
+    <div class="skel skel--lg"></div>
+    <div class="skel skel--lg"></div>
+  </div>`;
+
+const LOADING_METRO_HTML = `
+  <div class="popup-skeleton" aria-label="Cargando información de la estación">
+    <div class="skel skel--mid"></div>
+    <div class="skel skel--lg"></div>
+    <div class="skel skel--wide"></div>
+    <div class="skel skel--mid"></div>
+    <div class="skel skel--short"></div>
+  </div>`;
+
+/* ── Shared utility (needs module scope for createErrorHtml) ── */
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function createErrorHtml(msg, detail = '') {
+  return `<div class="popup-error">
+    <span class="popup-error__icon" aria-hidden="true">!</span>
+    <p class="popup-error__msg">${escapeHtml(msg)}</p>
+    ${detail ? `<code class="popup-error__detail">${escapeHtml(detail)}</code>` : ''}
+  </div>`;
+}
 const MAP_CENTER    = [-70.65, -33.45];
 const CANDIDATE_POOL = 50; // candidatos pre-filtrados antes de haversine preciso
 
@@ -115,10 +162,13 @@ const App = (() => {
 
   /* ---- Popup ---- */
 
-  const popupEl       = document.getElementById('custom-popup');
-  const popupTitleEl  = document.getElementById('popup-title');
+  const popupEl        = document.getElementById('custom-popup');
+  const popupTitleEl   = document.getElementById('popup-title');
+  const popupBadgeEl   = document.getElementById('popup-badge');
   const popupContentEl = document.getElementById('popup-content');
   const popupCloseBtn  = document.getElementById('popup-close');
+
+  let _prevFocusEl = null;
 
   // Cached popup dimensions — avoid forced reflow on every map move/zoom
   let _cachedPopupSize = null; // { w, h }
@@ -132,6 +182,7 @@ const App = (() => {
 
   function closeCustomPopup() {
     popupEl.style.display = 'none';
+    popupEl.removeAttribute('data-visible');
     _cachedPopupSize = null;
     if (state.popupMoveHandlerKey) {
       state.map.off('move', state.popupMoveHandlerKey);
@@ -139,6 +190,7 @@ const App = (() => {
       state.popupMoveHandlerKey = null;
     }
     state.activeMarker = null;
+    if (_prevFocusEl) { try { _prevFocusEl.focus(); } catch (_) {} _prevFocusEl = null; }
     events.emit('popup:closed');
   }
 
@@ -166,16 +218,20 @@ const App = (() => {
     }
   }
 
-  function showCustomPopup(markerCoordinates, title, contentHtml, marker) {
+  function showCustomPopup(markerCoordinates, title, contentHtml, marker, type = 'bus') {
+    _prevFocusEl              = document.activeElement;
     popupTitleEl.textContent  = title;
     popupContentEl.innerHTML  = contentHtml;
+    popupBadgeEl.textContent  = type === 'metro' ? 'M' : 'P';
+    popupBadgeEl.className    = `map-popup__type-badge map-popup__type-badge--${type}`;
     popupEl.style.display     = 'block';
+    popupEl.setAttribute('data-visible', 'true');
     state.activeMarker        = marker;
-    // Read size after paint — one reflow instead of two, no setTimeout
     requestAnimationFrame(() => {
       const r = popupEl.getBoundingClientRect();
       _cachedPopupSize = { w: r.width, h: r.height };
       repositionPopup(marker);
+      popupCloseBtn.focus();
     });
 
     const onMapMove = () => repositionPopup(marker);
@@ -245,91 +301,127 @@ const App = (() => {
     closeCustomPopup();
   }
 
-  /* ---- Utilidad XSS ---- */
-
-  function escapeHtml(s) {
-    return String(s ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
-
   /* ---- Contenido de popups ---- */
 
-  // Formato local: { paradero, nombre, hora_consulta, servicios: [{servicio, bus, tiempo, distancia_metros}] }
+  // Formato: { paradero, nombre, hora_consulta, servicios: [{servicio, bus, tiempo, distancia_metros}] }
   function createBusStopPopupContent(stopData) {
-    let html = `<div style="margin-bottom:10px"><strong>${escapeHtml(stopData.nombre) || 'Nombre no disponible'}</strong></div>`;
-    if (stopData.hora_consulta) {
-      html += `<div style="font-size:0.8em;color:#999;margin-bottom:8px">🕐 Consulta: ${escapeHtml(stopData.hora_consulta)}</div>`;
+    const nombre = escapeHtml(stopData.nombre) || 'Nombre no disponible';
+    let html = `<div class="stop-header">
+      <div class="stop-header__name">${nombre}</div>
+      ${stopData.hora_consulta ? `<div class="stop-header__ts">Actualizado: ${escapeHtml(stopData.hora_consulta)}</div>` : ''}
+    </div>`;
+
+    if (!stopData.servicios?.length) {
+      return html + `<div class="popup-empty">
+        <span class="popup-empty__icon" aria-hidden="true">—</span>
+        <p class="popup-empty__msg">Sin información de servicios disponible</p>
+      </div>`;
     }
-    if (stopData.servicios?.length) {
-      for (const svc of stopData.servicios) {
-        const hasBus  = svc.bus != null;
-        const color   = hasBus ? '#28a745' : '#dc3545';
-        html += `<div style="margin-bottom:8px;padding:8px;background:#f8f8f8;border-radius:4px">
-          <div style="color:${color};font-weight:600">Recorrido ${escapeHtml(svc.servicio)}</div>`;
-        if (hasBus) {
-          const distancia = svc.distancia_metros ?? svc.distancia ?? null;
-          html += `<div style="font-size:0.85em;margin-top:4px">
-            🚌 <strong>${escapeHtml(svc.bus)}</strong><br>
-            ⏱ ${escapeHtml(svc.tiempo)}<br>
-            ${distancia != null ? `📍 ${escapeHtml(distancia)}m` : ''}
+
+    html += '<div class="service-list">';
+    for (const svc of stopData.servicios) {
+      const hasBus    = svc.bus != null;
+      const distancia = svc.distancia_metros ?? svc.distancia ?? null;
+      html += `<div class="service-card">
+        <div class="service-card__head">
+          <span class="route-badge">${escapeHtml(svc.servicio)}</span>
+        </div>
+        <div class="service-card__body">`;
+
+      if (hasBus) {
+        html += `<span class="bus-chip">${escapeHtml(svc.bus)}</span>
+          <div class="service-metrics">
+            <div class="service-metric">
+              <span class="service-metric__val">${escapeHtml(svc.tiempo)}</span>
+              <span class="service-metric__lbl">llegada</span>
+            </div>
+            ${distancia != null ? `<div class="service-metric">
+              <span class="service-metric__val">${escapeHtml(String(distancia))}m</span>
+              <span class="service-metric__lbl">distancia</span>
+            </div>` : ''}
           </div>`;
-        } else {
-          html += `<div style="font-size:0.85em;color:#666;margin-top:4px">${escapeHtml(svc.tiempo)}</div>`;
-        }
-        html += '</div>';
+      } else {
+        html += `<span class="service-card__no-service">${escapeHtml(svc.tiempo)}</span>`;
       }
-    } else {
-      html += '<div>No hay información de servicios disponible</div>';
+
+      html += '</div></div>';
     }
+    html += '</div>';
     return html;
   }
 
-  // Formato local: { code, name, line_id, line_name, enabled, status_description, message,
-  //                   transfers, schedule: {open,close: {weekdays,saturday,holidays}},
-  //                   terminal_a, terminal_b: {name, first_train, last_train: {weekdays,...}} }
+  // Formato: { code, name, line_id, enabled, status_description, message,
+  //            transfers, schedule: {open,close: {weekdays,saturday,holidays}},
+  //            terminal_a, terminal_b: {name, first_train, last_train: {weekdays,...}} }
   function createMetroPopupContent(station) {
-    if (!station) return '<div>No hay información disponible</div>';
+    if (!station) {
+      return `<div class="popup-empty">
+        <span class="popup-empty__icon" aria-hidden="true">—</span>
+        <p class="popup-empty__msg">Sin información disponible</p>
+      </div>`;
+    }
 
-    const statusColor = station.enabled ? '#28a745' : '#dc3545';
-    const statusText  = escapeHtml(station.status_description || (station.enabled ? 'Operativa' : 'No habilitada'));
-    const allLines    = escapeHtml([station.line_id, ...(station.transfers || [])].join(', '));
-    const sched       = station.schedule;
+    const fmt       = (v) => escapeHtml((v && v !== '-') ? v : '—');
+    const statusOk  = !!station.enabled;
+    const statusTxt = escapeHtml(station.status_description || (statusOk ? 'Operativa' : 'No habilitada'));
+    const lines     = [station.line_id, ...(station.transfers || [])].filter(Boolean);
 
-    const fmt = (val) => escapeHtml((val && val !== '-') ? val : '—');
+    const lineBadges = lines.map(l => {
+      const c = METRO_LINE_COLORS[l] || { bg: 'var(--metro-bg)', fg: 'var(--metro-fg)' };
+      return `<span class="line-badge" style="background:${c.bg};color:${c.fg}">${escapeHtml(l)}</span>`;
+    }).join('');
 
-    let html = `
-      <div>
-        <div style="color:${statusColor};font-weight:bold;margin-bottom:4px">
-          Líneas: ${allLines || '—'}
-        </div>
-        <div style="color:${statusColor};margin-bottom:4px">${statusText}</div>
-        ${station.message ? `<div style="font-size:0.82em;color:#888;margin-bottom:6px">${escapeHtml(station.message)}</div>` : ''}`;
+    let html = `<div class="station-meta">
+      ${lineBadges || '<span class="line-badge">—</span>'}
+      <span class="status-badge status-badge--${statusOk ? 'ok' : 'err'}">${statusTxt}</span>
+    </div>`;
 
+    if (station.message) {
+      html += `<div class="station-alert">${escapeHtml(station.message)}</div>`;
+    }
+
+    const sched = station.schedule;
     if (sched) {
-      html += `
-        <div style="margin-top:6px;font-size:0.85em;border-top:1px solid #eee;padding-top:6px">
-          <strong>Horario de apertura</strong><br>
-          <span style="color:#555">L-V:</span> ${fmt(sched.open?.weekdays)} → ${fmt(sched.close?.weekdays)}<br>
-          <span style="color:#555">Sáb:</span> ${fmt(sched.open?.saturday)} → ${fmt(sched.close?.saturday)}<br>
-          <span style="color:#555">Dom/Fest:</span> ${fmt(sched.open?.holidays)} → ${fmt(sched.close?.holidays)}
-        </div>`;
+      html += `<div class="schedule-block">
+        <span class="schedule-block__title">Horario de apertura</span>
+        <div class="schedule-row">
+          <span class="schedule-row__day">L - V</span>
+          <span class="schedule-row__range">
+            ${fmt(sched.open?.weekdays)}<span class="schedule-row__dash">→</span>${fmt(sched.close?.weekdays)}
+          </span>
+        </div>
+        <div class="schedule-row">
+          <span class="schedule-row__day">Sábado</span>
+          <span class="schedule-row__range">
+            ${fmt(sched.open?.saturday)}<span class="schedule-row__dash">→</span>${fmt(sched.close?.saturday)}
+          </span>
+        </div>
+        <div class="schedule-row">
+          <span class="schedule-row__day">Dom / Fest</span>
+          <span class="schedule-row__range">
+            ${fmt(sched.open?.holidays)}<span class="schedule-row__dash">→</span>${fmt(sched.close?.holidays)}
+          </span>
+        </div>
+      </div>`;
     }
 
     const renderTerminal = (t) => {
       if (!t) return '';
-      return `
-        <div style="margin-top:6px;font-size:0.82em;border-top:1px solid #eee;padding-top:6px">
-          <strong>→ ${escapeHtml(t.name)}</strong><br>
-          Primer tren (L-V): ${fmt(t.first_train?.weekdays)}<br>
-          Último tren (L-V): ${fmt(t.last_train?.weekdays)}
-        </div>`;
+      return `<div class="terminal-block">
+        <div class="terminal-block__name">${escapeHtml(t.name)}</div>
+        <div class="terminal-row">
+          <span class="terminal-row__label">Primer tren L-V</span>
+          <span class="terminal-row__value">${fmt(t.first_train?.weekdays)}</span>
+        </div>
+        <div class="terminal-row">
+          <span class="terminal-row__label">Último tren L-V</span>
+          <span class="terminal-row__value">${fmt(t.last_train?.weekdays)}</span>
+        </div>
+      </div>`;
     };
+
     html += renderTerminal(station.terminal_a);
     html += renderTerminal(station.terminal_b);
-    html += '</div>';
     return html;
   }
 
@@ -371,14 +463,9 @@ const App = (() => {
         const cacheKey    = stationName.toLowerCase();
         const hit         = _stationCache.get(cacheKey);
         if (hit && Date.now() - hit.ts < _STATION_TTL_MS) {
-          showCustomPopup([lng, lat], `🚇 ${stationName}`, createMetroPopupContent(hit.data), marker);
+          showCustomPopup([lng, lat], stationName, createMetroPopupContent(hit.data), marker, 'metro');
         } else {
-          showCustomPopup(
-            [lng, lat],
-            `🚇 ${stationName}`,
-            '<div class="loading-content"><div class="loading-spinner"></div><p>Cargando información de la estación...</p></div>',
-            marker
-          );
+          showCustomPopup([lng, lat], stationName, LOADING_METRO_HTML, marker, 'metro');
           try {
             const nombre = encodeURIComponent(stationName);
             const res = await fetch(`${API_BASE}/metro/estacion?nombre=${nombre}`);
@@ -387,37 +474,32 @@ const App = (() => {
               _stationCache.set(cacheKey, { data, ts: Date.now() });
               updatePopupContent(createMetroPopupContent(data), marker);
             } else {
-              updatePopupContent(`<div>Error al obtener información de metro (${res.status})</div>`, marker);
+              updatePopupContent(createErrorHtml(`Error al obtener información de la estación (${res.status})`), marker);
             }
           } catch (err) {
             console.error('metro fetch error', err);
-            updatePopupContent('<div>Error: ¿está corriendo el servidor Python?</div>', marker);
+            updatePopupContent(createErrorHtml('No se pudo conectar al servidor.', 'uvicorn api:app --reload'), marker);
           }
         }
       } else {
-        showCustomPopup(
-          [lng, lat],
-          `🚌 ${markerData.properties.stop_id}`,
-          '<div class="loading-content"><div class="loading-spinner"></div><p>Cargando datos en tiempo real...</p></div>',
-          marker
-        );
+        const stopId = markerData.properties.stop_id;
+        showCustomPopup([lng, lat], `Paradero ${stopId}`, LOADING_BUS_HTML, marker, 'bus');
         try {
-          const res = await fetch(`${API_BASE}/paradero/${markerData.properties.stop_id}`);
+          const res = await fetch(`${API_BASE}/paradero/${stopId}`);
           if (res.ok) {
             const data = await res.json();
             updatePopupContent(createBusStopPopupContent(data), marker);
           } else if (res.status === 502) {
-            const err = await res.json().catch(() => ({}));
-            const msg = (err.detail || '').includes('ibus') || (err.detail || '').includes('iBUS') || (err.detail || '').includes('m.ibus.cl')
-              ? 'Servicio iBUS no disponible en este momento.'
-              : `Error al obtener datos de paradero (${res.status})`;
-            updatePopupContent(`<div style="color:#888">${msg}</div>`, marker);
+            const errBody = await res.json().catch(() => ({}));
+            const isIbus  = ['ibus', 'iBUS', 'm.ibus.cl'].some(s => (errBody.detail || '').includes(s));
+            const msg     = isIbus ? 'Servicio iBUS no disponible en este momento.' : `Error al obtener datos del paradero (${res.status})`;
+            updatePopupContent(createErrorHtml(msg), marker);
           } else {
-            updatePopupContent(`<div>Error al obtener datos de paradero (${res.status})</div>`, marker);
+            updatePopupContent(createErrorHtml(`Error al obtener datos del paradero (${res.status})`), marker);
           }
         } catch (err) {
           console.error('bus fetch error', err);
-          updatePopupContent('<div>Error: ¿está corriendo el servidor Python? (uvicorn api:app)</div>', marker);
+          updatePopupContent(createErrorHtml('No se pudo conectar al servidor.', 'uvicorn api:app --reload'), marker);
         }
       }
     });
@@ -560,3 +642,28 @@ const App = (() => {
 })();
 
 App.init();
+
+/* Escape closes popup; Tab keeps focus inside while open */
+document.addEventListener('keydown', (e) => {
+  const popup = document.getElementById('custom-popup');
+  if (!popup.dataset.visible) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    App._events.emit('popup:close-requested');
+    document.getElementById('popup-close').click();
+    return;
+  }
+  if (e.key === 'Tab') {
+    const focusable = Array.from(
+      popup.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
+    ).filter(el => !el.disabled && el.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last  = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault(); first.focus();
+    }
+  }
+});

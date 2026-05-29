@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-
 <html lang="es">
 
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Explorador de Transporte - Santiago</title>
+  <meta name="description" content="Explora metro y paraderos de Santiago en tiempo real. Haz clic en el mapa para ver las opciones de transporte más cercanas." />
+  <title>SantiaGO — Transporte en tiempo real</title>
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
   <link rel="stylesheet" href="./css/main.css" />
@@ -13,52 +13,96 @@
 
 <body>
 
-  <div class="header">
-    <h1>🚇 Mapa Interactivo de Transporte - Santiago</h1>
-    <p>Haz clic en el mapa para encontrar el metro más cercano y los tres paraderos más próximos</p>
-    <div class="legend">
-      <div class="legend-item"><div class="legend-color metro-color"></div><span>Metro más cercano</span></div>
-      <div class="legend-item"><div class="legend-color bus-red"></div><span>Paradero 1</span></div>
-      <div class="legend-item"><div class="legend-color bus-green"></div><span>Paradero 2</span></div>
-      <div class="legend-item"><div class="legend-color bus-blue"></div><span>Paradero 3</span></div>
+  <header class="app-header" role="banner">
+    <div class="app-header__brand">
+      <svg class="app-header__icon" viewBox="0 0 26 26" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M4 21 L8 7 L13 17 L18 7 L22 21" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="app-header__wordmark">SantiaGO</span>
     </div>
-  </div>
+    <span class="app-header__sub">Transporte en tiempo real</span>
+    <div class="app-header__spacer"></div>
+    <nav class="app-legend" aria-label="Leyenda del mapa">
+      <div class="legend-item legend-item--metro" aria-label="Metro más cercano">
+        <div class="legend-item__pip" aria-hidden="true"></div>
+        <span>Metro</span>
+      </div>
+      <div class="legend-item legend-item--bus-1" aria-label="Paradero más cercano">
+        <div class="legend-item__pip" aria-hidden="true"></div>
+        <span>Paradero 1</span>
+      </div>
+      <div class="legend-item legend-item--bus-2" aria-label="Segundo paradero cercano">
+        <div class="legend-item__pip" aria-hidden="true"></div>
+        <span>Paradero 2</span>
+      </div>
+      <div class="legend-item legend-item--bus-3" aria-label="Tercer paradero cercano">
+        <div class="legend-item__pip" aria-hidden="true"></div>
+        <span>Paradero 3</span>
+      </div>
+    </nav>
+  </header>
 
-  <div id="map-container">
-    <div id="map"></div>
-    <div id="tooltip"></div>
-    <div class="loading" id="loading">
-      <div>
-        <div class="spinner"></div>
-        <p>Cargando datos de transporte...</p>
+  <main id="map-container">
+    <div
+      id="map"
+      role="application"
+      aria-label="Mapa interactivo de Santiago. Haz clic para encontrar metro y paraderos cercanos."
+    ></div>
+
+    <div id="tooltip" role="tooltip" aria-hidden="true"></div>
+
+    <div
+      class="loading-overlay"
+      id="loading"
+      role="status"
+      aria-live="polite"
+      aria-label="Cargando datos de transporte"
+    >
+      <div class="loading-overlay__inner">
+        <div class="loading-overlay__ring" aria-hidden="true"></div>
+        <p class="loading-overlay__label">Cargando datos de transporte...</p>
       </div>
     </div>
 
-    <div id="custom-popup" class="custom-popup">
-      <div class="custom-popup-header">
-        <div class="custom-popup-title" id="popup-title">Información</div>
-        <button class="custom-popup-close" id="popup-close">×</button>
-      </div>
-      <div class="custom-popup-content" id="popup-content">
-        <div class="loading-content">
-          <div class="loading-spinner"></div>
-          <p>Cargando información...</p>
+    <div
+      id="custom-popup"
+      class="map-popup"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="popup-title"
+    >
+      <div class="map-popup__header">
+        <div class="map-popup__lead">
+          <span class="map-popup__type-badge map-popup__type-badge--metro" id="popup-badge" aria-hidden="true">M</span>
+          <h2 class="map-popup__title" id="popup-title">Información</h2>
         </div>
+        <button
+          class="map-popup__close"
+          id="popup-close"
+          aria-label="Cerrar panel de información"
+          title="Cerrar"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path d="M11 3L3 11M3 3l8 8" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+          </svg>
+        </button>
       </div>
+      <div class="map-popup__body" id="popup-content"></div>
     </div>
-  </div>
+  </main>
 
-  <footer>
-    📊 Datos GTFS: <a href="https://www.dtpm.cl/index.php/gtfs-vigente" target="_blank">Ministerio de Transporte de Chile</a> |
-    👨‍💻 Desarrollado con ❤️ por <a href="https://github.com/based-on-what/" target="_blank">@based-on-what</a> |
-    📁 GitHub: <a href="https://github.com/based-on-what/santia-go" target="_blank">SantiaGO</a> 
+  <footer class="app-footer" role="contentinfo">
+    <span>Datos GTFS: <a href="https://www.dtpm.cl/index.php/gtfs-vigente" target="_blank" rel="noopener noreferrer">Ministerio de Transporte</a></span>
+    <span class="app-footer__sep" aria-hidden="true">·</span>
+    <span>Desarrollado por <a href="https://github.com/based-on-what/" target="_blank" rel="noopener noreferrer">@based-on-what</a></span>
+    <span class="app-footer__sep" aria-hidden="true">·</span>
+    <a href="https://github.com/based-on-what/santia-go" target="_blank" rel="noopener noreferrer">GitHub</a>
   </footer>
 
   <script>
-    /* Token público de Mapbox (pk. = public key, diseñado para el navegador).
-       Para producción, reemplaza este valor o inyéctalo desde tu plataforma de deploy. */
     window.MAPBOX_TOKEN = 'pk.eyJ1IjoiYmFzZWQtb24td2hhdCIsImEiOiJjbWNhbTBpcnAwNHVsMmxwdXF3Z3g2N3ZpIn0.LtS5KFjtj5ENVIlHqUwvGw';
   </script>
   <script src="./js/main.js"></script>
 </body>
+
 </html>
