@@ -37,8 +37,8 @@ def get_metro_network(svc: NetworkService = Depends(get_service)):
 
 @router.get("/metro/estacion", summary="Detalle de una estación con horarios")
 def get_estacion(
-    nombre: str = Query(..., description="Nombre exacto de la estación (ej: Baquedano)"),
     response: Response,
+    nombre: str = Query(..., description="Nombre exacto de la estación (ej: Baquedano)"),
     svc: NetworkService = Depends(get_service),
     network: NetworkStatus = Depends(_get_network),
 ):
