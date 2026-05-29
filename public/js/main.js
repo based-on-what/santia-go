@@ -24,6 +24,8 @@ const App = (() => {
     map: null,
     allMetroStations: [],
     allBusStops: [],
+    metroGridIdx: null,
+    busGridIdx: null,
     currentMarkers: [],
     currentRouteIds: [],
     referenceMarker: null,
@@ -74,6 +76,37 @@ const App = (() => {
       .slice(0, limit);
   }
 
+  // ---- Spatial grid index — O(1) nearest-neighbor on hot paths ----
+  // cellSize 0.01° ≈ 1 km; radius 2 checks 5×5 cells (~25 km²) — always finds nearest stop.
+  function buildSpatialGrid(points, cellSize = 0.01) {
+    const grid = new Map();
+    for (let i = 0; i < points.length; i++) {
+      const [lon, lat] = points[i].geometry.coordinates;
+      const key = `${Math.floor(lon / cellSize)},${Math.floor(lat / cellSize)}`;
+      if (!grid.has(key)) grid.set(key, []);
+      grid.get(key).push(i);
+    }
+    return { grid, cellSize, points };
+  }
+
+  function findNearestInGrid(gidx, coords, limit = 1, radius = 2) {
+    const [lon, lat] = coords;
+    const cx = Math.floor(lon / gidx.cellSize);
+    const cy = Math.floor(lat / gidx.cellSize);
+    const candidates = [];
+    for (let dx = -radius; dx <= radius; dx++) {
+      for (let dy = -radius; dy <= radius; dy++) {
+        const bucket = gidx.grid.get(`${cx + dx},${cy + dy}`);
+        if (bucket) for (const i of bucket) candidates.push(gidx.points[i]);
+      }
+    }
+    if (!candidates.length) return [];
+    return candidates
+      .map(p => ({ ...p, distance: approxSqDist(coords, p.geometry.coordinates) }))
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, limit);
+  }
+
   /* ---- Marcadores ---- */
 
   function createMarker({ coords, color }) {
@@ -87,10 +120,19 @@ const App = (() => {
   const popupContentEl = document.getElementById('popup-content');
   const popupCloseBtn  = document.getElementById('popup-close');
 
+  // Cached popup dimensions — avoid forced reflow on every map move/zoom
+  let _cachedPopupSize = null; // { w, h }
+  // Cached tooltip width — updated lazily, avoids reflow on every mousemove frame
+  let _lastTooltipW = 120;
+  // Per-station API cache — prevents duplicate fetches for the same station
+  const _stationCache = new Map(); // name.toLowerCase() → { data, ts }
+  const _STATION_TTL_MS = 300_000;
+
   popupCloseBtn.addEventListener('click', (ev) => { ev.stopPropagation(); closeCustomPopup(); });
 
   function closeCustomPopup() {
     popupEl.style.display = 'none';
+    _cachedPopupSize = null;
     if (state.popupMoveHandlerKey) {
       state.map.off('move', state.popupMoveHandlerKey);
       state.map.off('zoom', state.popupMoveHandlerKey);
@@ -101,17 +143,16 @@ const App = (() => {
   }
 
   function repositionPopup(marker) {
-    if (!marker || state.activeMarker !== marker) return;
+    if (!marker || state.activeMarker !== marker || !_cachedPopupSize) return;
     try {
       const markerRect  = marker.getElement().getBoundingClientRect();
       const markerTipX  = markerRect.left + markerRect.width / 2;
       const markerTipY  = markerRect.bottom;
-      popupEl.offsetHeight; // force reflow
-      const popupRect   = popupEl.getBoundingClientRect();
+      const { w: popW, h: popH } = _cachedPopupSize;
       const mapContainer = document.getElementById('map-container');
-      let left = markerTipX - popupRect.width / 2;
-      let top  = markerTipY - popupRect.height;
-      left = Math.max(10, Math.min(mapContainer.clientWidth - popupRect.width - 10, left));
+      let left = markerTipX - popW / 2;
+      let top  = markerTipY - popH;
+      left = Math.max(10, Math.min(mapContainer.clientWidth - popW - 10, left));
       if (top < 10) {
         top = markerTipY + 15;
         popupEl.classList.add('popup-below');
@@ -130,8 +171,12 @@ const App = (() => {
     popupContentEl.innerHTML  = contentHtml;
     popupEl.style.display     = 'block';
     state.activeMarker        = marker;
-    repositionPopup(marker);
-    setTimeout(() => repositionPopup(marker), 60);
+    // Read size after paint — one reflow instead of two, no setTimeout
+    requestAnimationFrame(() => {
+      const r = popupEl.getBoundingClientRect();
+      _cachedPopupSize = { w: r.width, h: r.height };
+      repositionPopup(marker);
+    });
 
     const onMapMove = () => repositionPopup(marker);
     if (state.popupMoveHandlerKey) {
@@ -146,7 +191,11 @@ const App = (() => {
   function updatePopupContent(contentHtml, marker) {
     if (state.activeMarker === marker) {
       popupContentEl.innerHTML = contentHtml;
-      setTimeout(() => repositionPopup(marker), 0);
+      requestAnimationFrame(() => {
+        const r = popupEl.getBoundingClientRect();
+        _cachedPopupSize = { w: r.width, h: r.height };
+        repositionPopup(marker);
+      });
     }
   }
 
@@ -196,29 +245,39 @@ const App = (() => {
     closeCustomPopup();
   }
 
+  /* ---- Utilidad XSS ---- */
+
+  function escapeHtml(s) {
+    return String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   /* ---- Contenido de popups ---- */
 
   // Formato local: { paradero, nombre, hora_consulta, servicios: [{servicio, bus, tiempo, distancia_metros}] }
   function createBusStopPopupContent(stopData) {
-    let html = `<div style="margin-bottom:10px"><strong>${stopData.nombre || 'Nombre no disponible'}</strong></div>`;
+    let html = `<div style="margin-bottom:10px"><strong>${escapeHtml(stopData.nombre) || 'Nombre no disponible'}</strong></div>`;
     if (stopData.hora_consulta) {
-      html += `<div style="font-size:0.8em;color:#999;margin-bottom:8px">🕐 Consulta: ${stopData.hora_consulta}</div>`;
+      html += `<div style="font-size:0.8em;color:#999;margin-bottom:8px">🕐 Consulta: ${escapeHtml(stopData.hora_consulta)}</div>`;
     }
     if (stopData.servicios?.length) {
       for (const svc of stopData.servicios) {
         const hasBus  = svc.bus != null;
         const color   = hasBus ? '#28a745' : '#dc3545';
         html += `<div style="margin-bottom:8px;padding:8px;background:#f8f8f8;border-radius:4px">
-          <div style="color:${color};font-weight:600">Recorrido ${svc.servicio}</div>`;
+          <div style="color:${color};font-weight:600">Recorrido ${escapeHtml(svc.servicio)}</div>`;
         if (hasBus) {
           const distancia = svc.distancia_metros ?? svc.distancia ?? null;
           html += `<div style="font-size:0.85em;margin-top:4px">
-            🚌 <strong>${svc.bus}</strong><br>
-            ⏱ ${svc.tiempo}<br>
-            ${distancia != null ? `📍 ${distancia}m` : ''}
+            🚌 <strong>${escapeHtml(svc.bus)}</strong><br>
+            ⏱ ${escapeHtml(svc.tiempo)}<br>
+            ${distancia != null ? `📍 ${escapeHtml(distancia)}m` : ''}
           </div>`;
         } else {
-          html += `<div style="font-size:0.85em;color:#666;margin-top:4px">${svc.tiempo}</div>`;
+          html += `<div style="font-size:0.85em;color:#666;margin-top:4px">${escapeHtml(svc.tiempo)}</div>`;
         }
         html += '</div>';
       }
@@ -235,11 +294,11 @@ const App = (() => {
     if (!station) return '<div>No hay información disponible</div>';
 
     const statusColor = station.enabled ? '#28a745' : '#dc3545';
-    const statusText  = station.status_description || (station.enabled ? 'Operativa' : 'No habilitada');
-    const allLines    = [station.line_id, ...(station.transfers || [])].join(', ');
+    const statusText  = escapeHtml(station.status_description || (station.enabled ? 'Operativa' : 'No habilitada'));
+    const allLines    = escapeHtml([station.line_id, ...(station.transfers || [])].join(', '));
     const sched       = station.schedule;
 
-    const fmt = (val) => (val && val !== '-') ? val : '—';
+    const fmt = (val) => escapeHtml((val && val !== '-') ? val : '—');
 
     let html = `
       <div>
@@ -247,7 +306,7 @@ const App = (() => {
           Líneas: ${allLines || '—'}
         </div>
         <div style="color:${statusColor};margin-bottom:4px">${statusText}</div>
-        ${station.message ? `<div style="font-size:0.82em;color:#888;margin-bottom:6px">${station.message}</div>` : ''}`;
+        ${station.message ? `<div style="font-size:0.82em;color:#888;margin-bottom:6px">${escapeHtml(station.message)}</div>` : ''}`;
 
     if (sched) {
       html += `
@@ -263,7 +322,7 @@ const App = (() => {
       if (!t) return '';
       return `
         <div style="margin-top:6px;font-size:0.82em;border-top:1px solid #eee;padding-top:6px">
-          <strong>→ ${t.name}</strong><br>
+          <strong>→ ${escapeHtml(t.name)}</strong><br>
           Primer tren (L-V): ${fmt(t.first_train?.weekdays)}<br>
           Último tren (L-V): ${fmt(t.last_train?.weekdays)}
         </div>`;
@@ -280,8 +339,8 @@ const App = (() => {
     clearPreviousElements();
     if (!state.allMetroStations.length || !state.allBusStops.length) return;
 
-    const [nearestMetro]  = findNearestPoints(state.allMetroStations, refCoords, 1);
-    const nearestStops    = findNearestPoints(state.allBusStops, refCoords, 3);
+    const [nearestMetro]  = state.metroGridIdx ? findNearestInGrid(state.metroGridIdx, refCoords, 1) : findNearestPoints(state.allMetroStations, refCoords, 1);
+    const nearestStops    = state.busGridIdx   ? findNearestInGrid(state.busGridIdx,   refCoords, 3) : findNearestPoints(state.allBusStops,      refCoords, 3);
 
     if (nearestMetro) {
       const marker = createMarker({ coords: nearestMetro.geometry.coordinates, color: '#8a2be2' });
@@ -308,24 +367,32 @@ const App = (() => {
       const { lng, lat } = marker.getLngLat();
 
       if (isMetro) {
-        showCustomPopup(
-          [lng, lat],
-          `🚇 ${markerData.properties.name}`,
-          '<div class="loading-content"><div class="loading-spinner"></div><p>Cargando información de la estación...</p></div>',
-          marker
-        );
-        try {
-          const nombre = encodeURIComponent(markerData.properties.name);
-          const res = await fetch(`${API_BASE}/metro/estacion?nombre=${nombre}`);
-          if (res.ok) {
-            const data = await res.json();
-            updatePopupContent(createMetroPopupContent(data), marker);
-          } else {
-            updatePopupContent(`<div>Error al obtener información de metro (${res.status})</div>`, marker);
+        const stationName = markerData.properties.name;
+        const cacheKey    = stationName.toLowerCase();
+        const hit         = _stationCache.get(cacheKey);
+        if (hit && Date.now() - hit.ts < _STATION_TTL_MS) {
+          showCustomPopup([lng, lat], `🚇 ${stationName}`, createMetroPopupContent(hit.data), marker);
+        } else {
+          showCustomPopup(
+            [lng, lat],
+            `🚇 ${stationName}`,
+            '<div class="loading-content"><div class="loading-spinner"></div><p>Cargando información de la estación...</p></div>',
+            marker
+          );
+          try {
+            const nombre = encodeURIComponent(stationName);
+            const res = await fetch(`${API_BASE}/metro/estacion?nombre=${nombre}`);
+            if (res.ok) {
+              const data = await res.json();
+              _stationCache.set(cacheKey, { data, ts: Date.now() });
+              updatePopupContent(createMetroPopupContent(data), marker);
+            } else {
+              updatePopupContent(`<div>Error al obtener información de metro (${res.status})</div>`, marker);
+            }
+          } catch (err) {
+            console.error('metro fetch error', err);
+            updatePopupContent('<div>Error: ¿está corriendo el servidor Python?</div>', marker);
           }
-        } catch (err) {
-          console.error('metro fetch error', err);
-          updatePopupContent('<div>Error: ¿está corriendo el servidor Python?</div>', marker);
         }
       } else {
         showCustomPopup(
@@ -363,8 +430,9 @@ const App = (() => {
   function updateConnectionsAndTooltip(cursorLngLat, point) {
     if (!cursorLngLat) return;
 
-    const [nearestMetro] = findNearestPoints(state.allMetroStations, [cursorLngLat.lng, cursorLngLat.lat], 1);
-    const nearestStops   = findNearestPoints(state.allBusStops,      [cursorLngLat.lng, cursorLngLat.lat], 3);
+    const loc = [cursorLngLat.lng, cursorLngLat.lat];
+    const [nearestMetro] = state.metroGridIdx ? findNearestInGrid(state.metroGridIdx, loc, 1) : findNearestPoints(state.allMetroStations, loc, 1);
+    const nearestStops   = state.busGridIdx   ? findNearestInGrid(state.busGridIdx,   loc, 3) : findNearestPoints(state.allBusStops,      loc, 3);
 
     const nearest = [];
     if (nearestMetro) nearest.push({ coord: nearestMetro.geometry.coordinates, color: '#8a2be2' });
@@ -390,8 +458,10 @@ const App = (() => {
     const tooltip     = document.getElementById('tooltip');
     const mapContainer = document.getElementById('map-container');
     const mapRect     = mapContainer.getBoundingClientRect();
-    const ttW = tooltip.offsetWidth  || 120;
-    const ttH = tooltip.offsetHeight || 20;
+    // Set text before positioning; use cached width to avoid forced reflow on hot path
+    tooltip.textContent = nearestMetro ? `Cerca: ${nearestMetro.properties.name}` : 'Cerca: —';
+    const ttW = _lastTooltipW;
+    const ttH = 20;
     let left  = point.x + 10;
     let top   = point.y + 10;
     if (left + ttW > mapRect.width)  left = point.x - ttW - 10;
@@ -401,7 +471,8 @@ const App = (() => {
     tooltip.style.left    = `${left + mapRect.left}px`;
     tooltip.style.top     = `${top  + mapRect.top}px`;
     tooltip.style.display = 'block';
-    tooltip.textContent   = nearestMetro ? `Cerca: ${nearestMetro.properties.name}` : 'Cerca: —';
+    // Refresh cached width lazily — no blocking reflow this frame
+    requestAnimationFrame(() => { _lastTooltipW = tooltip.offsetWidth || _lastTooltipW; });
   }
 
   let rafPending = false;
@@ -450,6 +521,8 @@ const App = (() => {
 
         state.allMetroStations = metrosJson.features    || [];
         state.allBusStops      = paraderosJson.features || [];
+        state.metroGridIdx     = buildSpatialGrid(state.allMetroStations);
+        state.busGridIdx       = buildSpatialGrid(state.allBusStops);
 
         if (!state.allMetroStations.length) console.warn('estaciones_with_lines.geojson: sin features');
         if (!state.allBusStops.length)      console.warn('paraderos_santiago.geojson: sin features');

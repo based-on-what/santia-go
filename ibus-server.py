@@ -1,8 +1,16 @@
 import os
+import threading
+import time
+
 import requests
+import urllib3
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI(title="iBUS Proxy local")
 
@@ -23,17 +31,37 @@ HEADERS = {
     "Connection": "keep-alive",
 }
 
+_CACHE_TTL = float(os.environ.get("IBUS_CACHE_TTL", "20"))
+
+# Persistent session with connection pool — reused across all requests
+_session = requests.Session()
+_session.headers.update(HEADERS)
+_adapter = HTTPAdapter(
+    pool_connections=4,
+    pool_maxsize=16,
+    max_retries=Retry(total=2, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504]),
+)
+_session.mount("http://", _adapter)
+_session.mount("https://", _adapter)
+
+# Warm up cookies once at startup
+try:
+    _session.get(f"{BASE_URL}/index.jsp", verify=False, timeout=10)
+except Exception:
+    pass
+
+# In-memory response cache: stop_id -> (result_dict, timestamp)
+_cache: dict[str, tuple[dict, float]] = {}
+_cache_lock = threading.Lock()
+
 
 def _consultar(paradero: str) -> str:
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    session.get(f"{BASE_URL}/index.jsp", verify=False, timeout=10)
     params = {
         "paradero": paradero,
         "servicio": "",
         "button": "Consulta Paradero",
     }
-    resp = session.get(f"{BASE_URL}/Servlet", params=params, verify=False, timeout=10)
+    resp = _session.get(f"{BASE_URL}/Servlet", params=params, verify=False, timeout=10)
     resp.raise_for_status()
     return resp.text
 
@@ -56,14 +84,11 @@ def _parsear(html: str, paradero: str) -> dict:
         if not celdas:
             continue
         if len(celdas) == 4:
-            # Fila completa: servicio, bus, tiempo, distancia
             ultimo_svc = celdas[0].text.strip()
             servicios.append({"servicio": ultimo_svc, "bus": celdas[1].text.strip(), "tiempo": celdas[2].text.strip(), "distancia": celdas[3].text.strip()})
         elif len(celdas) == 3:
-            # Fila de continuación (rowspan): bus, tiempo, distancia — sin celda de servicio
             servicios.append({"servicio": ultimo_svc, "bus": celdas[0].text.strip(), "tiempo": celdas[1].text.strip(), "distancia": celdas[2].text.strip()})
         elif len(celdas) == 2:
-            # Sin buses: servicio, mensaje
             ultimo_svc = celdas[0].text.strip()
             servicios.append({"servicio": ultimo_svc, "bus": None, "tiempo": celdas[1].text.strip(), "distancia": None})
 
@@ -83,13 +108,24 @@ def health():
 @app.get("/paradero/{paradero}")
 def consultar_paradero(paradero: str):
     paradero = paradero.upper().strip()
+    now = time.monotonic()
+
+    with _cache_lock:
+        entry = _cache.get(paradero)
+        if entry and now - entry[1] < _CACHE_TTL:
+            return entry[0]
+
     try:
         html = _consultar(paradero)
     except requests.exceptions.Timeout:
         raise HTTPException(status_code=504, detail="Timeout al contactar m.ibus.cl")
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=502, detail=str(e))
-    return _parsear(html, paradero)
+
+    result = _parsear(html, paradero)
+    with _cache_lock:
+        _cache[paradero] = (result, now)
+    return result
 
 
 @app.get("/debug/{paradero}")

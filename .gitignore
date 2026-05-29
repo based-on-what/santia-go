@@ -36,3 +36,9 @@ desktop.ini
 
 # Railway
 .railway/
+
+# Codegraph
+.codegraph/
+
+# Claude
+.claude/

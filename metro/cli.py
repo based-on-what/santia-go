@@ -26,14 +26,10 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from .cache import cache_age, load_cache, save_cache
+from .cache import load_cache, save_cache
 from .models import Line, NetworkStatus, Station
-from .scraper import (
-    fetch_all,
-    fetch_network_status,
-    fetch_station_details,
-    fetch_station_schedule,
-)
+from .scraper import fetch_all, fetch_station_details, fetch_station_schedule
+from .serializers import network_to_dict
 
 console = Console()
 
@@ -61,10 +57,10 @@ def _lc(line_id: str) -> str:
 def _load_network(no_cache: bool, full: bool = False) -> Optional[NetworkStatus]:
     """Load from cache or fetch from metro.cl."""
     if not no_cache:
-        network = load_cache()
-        if network:
-            age = cache_age()
-            secs = int(age.total_seconds()) if age else 0
+        result = load_cache()
+        if result:
+            network, age = result
+            secs = int(age.total_seconds())
             console.print(
                 f"[dim]Usando caché ({secs}s de antigüedad). "
                 f"Usa --no-cache para datos frescos.[/dim]"
@@ -423,54 +419,7 @@ def export_json(no_cache: bool, output: str, full: bool):
     if not network:
         sys.exit(1)
 
-    def _day(d):
-        return {"weekdays": d.weekdays, "saturday": d.saturday, "holidays": d.holidays}
-
-    def _schedule(s):
-        if s is None:
-            return None
-        return {"open": _day(s.open), "close": _day(s.close)}
-
-    def _train(t):
-        if t is None:
-            return None
-        return {"name": t.name, "first_train": _day(t.first_train), "last_train": _day(t.last_train)}
-
-    data = {
-        "timestamp": network.timestamp,
-        "has_issues": network.has_issues,
-        "lines": [
-            {
-                "id": line.id,
-                "name": line.name,
-                "operational": line.operational,
-                "message": line.message,
-                "stations": [
-                    {
-                        "code": st.code,
-                        "name": st.name,
-                        "line_id": st.line_id,
-                        "enabled": st.enabled,
-                        "status_description": st.status_description,
-                        "message": st.message,
-                        "transfers": st.transfers,
-                        "schedule": _schedule(st.schedule),
-                        "terminal_a": _train(st.terminal_a),
-                        "terminal_b": _train(st.terminal_b),
-                        "accesses": [
-                            {"name": a.name, "operational": a.operational}
-                            for a in st.accesses
-                        ],
-                        "services": st.services,
-                    }
-                    for st in line.stations
-                ],
-            }
-            for line in network.lines
-        ],
-    }
-
     with open(output, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(network_to_dict(network), f, ensure_ascii=False, indent=2)
 
     console.print(f"[green]✓[/green] Exportado a [bold]{output}[/bold]")

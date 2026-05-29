@@ -70,26 +70,33 @@ class NetworkStatus:
     lines: list[Line]
     has_issues: bool
 
-    def get_station(self, code: str) -> Optional[Station]:
-        code = code.upper()
+    def __post_init__(self) -> None:
+        # O(1) indices built once on construction
+        self._by_code: dict[str, tuple[Station, Line]] = {}
+        self._by_name: dict[str, tuple[Station, Line]] = {}
+        self._by_line_id: dict[str, Line] = {}
+        # Pre-lowercased list for O(n) substring search without per-call .lower()
+        self._names_lower: list[tuple[str, str, "Station", "Line"]] = []
         for line in self.lines:
+            self._by_line_id[line.id] = line
             for station in line.stations:
-                if station.code == code:
-                    return station
-        return None
+                self._by_code[station.code] = (station, line)
+                name_l = station.name.lower()
+                self._by_name[name_l] = (station, line)
+                self._names_lower.append((name_l, station.code.lower(), station, line))
+
+    def get_station(self, code: str) -> Optional[Station]:
+        entry = self._by_code.get(code.upper())
+        return entry[0] if entry else None
 
     def get_line(self, line_id: str) -> Optional[Line]:
-        line_id = line_id.upper()
-        for line in self.lines:
-            if line.id == line_id:
-                return line
-        return None
+        return self._by_line_id.get(line_id.upper())
+
+    def find_by_name(self, name_lower: str) -> tuple[Optional[Station], Optional[Line]]:
+        entry = self._by_name.get(name_lower)
+        return entry if entry else (None, None)
 
     def search(self, query: str) -> list[tuple[Line, Station]]:
         q = query.lower()
-        results = []
-        for line in self.lines:
-            for station in line.stations:
-                if q in station.name.lower() or q == station.code.lower():
-                    results.append((line, station))
-        return results
+        return [(line, st) for (name, code, st, line) in self._names_lower
+                if q in name or q == code]

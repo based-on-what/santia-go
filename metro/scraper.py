@@ -11,11 +11,14 @@ Data sources:
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .models import (
     AccessPoint,
@@ -42,11 +45,26 @@ _HEADERS = {
     "Accept-Language": "es-CL,es;q=0.9",
 }
 
+# Persistent session shared across all scraper calls in this process
+_session = requests.Session()
+_session.headers.update(_HEADERS)
+_adapter = HTTPAdapter(
+    pool_connections=8,
+    pool_maxsize=32,
+    max_retries=Retry(total=2, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504]),
+)
+_session.mount("http://", _adapter)
+_session.mount("https://", _adapter)
+
+_FETCH_WORKERS = 12  # parallel workers for bulk station fetch
+_holiday_cache: dict[str, bool] = {}  # "YYYY-MM-DD" → bool
+
+
 # ── Low-level HTTP helpers ─────────────────────────────────────────────────────
 
 def _get_json(url: str, params: dict | None = None) -> dict | list | None:
     try:
-        r = requests.get(url, params=params, headers=_HEADERS, timeout=15)
+        r = _session.get(url, params=params, timeout=15)
         r.raise_for_status()
         return r.json()
     except Exception as exc:
@@ -56,7 +74,7 @@ def _get_json(url: str, params: dict | None = None) -> dict | list | None:
 
 def _get_html(url: str, params: dict | None = None) -> str | None:
     try:
-        r = requests.get(url, params=params, headers=_HEADERS, timeout=15)
+        r = _session.get(url, params=params, timeout=15)
         r.raise_for_status()
         return r.text
     except Exception as exc:
@@ -69,9 +87,14 @@ def _get_html(url: str, params: dict | None = None) -> str | None:
 def is_today_holiday() -> bool:
     """Returns True if today is a Chilean public holiday."""
     now = datetime.now()
+    key = now.strftime("%Y-%m-%d")
+    if key in _holiday_cache:
+        return _holiday_cache[key]
     url = HOLIDAY_API.format(year=now.year, month=now.month, day=now.day)
     data = _get_json(url)
-    return isinstance(data, list) and len(data) > 0
+    result = isinstance(data, list) and len(data) > 0
+    _holiday_cache[key] = result
+    return result
 
 
 # ── Network status (all lines + stations) ─────────────────────────────────────
@@ -89,9 +112,8 @@ def fetch_network_status() -> Optional[NetworkStatus]:
     has_issues = False
 
     for line_key, line_data in data.items():
-        # API keys are "l1", "l2", "l4a", etc. → normalise to "L1", "L4A"
         line_id = line_key.upper()
-        suffix = line_id[1:]                        # "1", "2", "4A"
+        suffix = line_id[1:]
         line_name = f"Línea {suffix}"
 
         operational = str(line_data.get("estado", "0")) == "1"
@@ -192,28 +214,19 @@ def fetch_station_details(
     if not html:
         return [], {}
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "lxml")
     accesses: list[AccessPoint] = []
     services: dict[str, list[str]] = {}
 
-    # ── Accesses & elevators ──────────────────────────────────────────────────
-    # Each <p class="p-left-15"> inside #estaccesibilidad is one access point.
-    # Operational items have a <span class="font-color-verde">,
-    # out-of-service items have <span class="font-color-rojo">.
     acc_section = soup.find("div", id="estaccesibilidad")
     if acc_section:
         for p in acc_section.find_all("p", class_="p-left-15"):
             operational = bool(p.find("span", class_="font-color-verde"))
-            # Strip icon glyphs and surrounding whitespace from the text
             name = p.get_text(" ", strip=True)
-            # Remove Font Awesome glyph characters (they show as tofu or icons)
             name = " ".join(name.split())
             if name:
                 accesses.append(AccessPoint(name=name, operational=operational))
 
-    # ── Station services ──────────────────────────────────────────────────────
-    # Each Bootstrap card in #estequipamiento is a category (Servicios Generales,
-    # Accesibilidad, Comercio, Cultura, …).
     svc_section = soup.find("div", id="estequipamiento")
     if svc_section:
         for card in svc_section.find_all("div", class_="card"):
@@ -232,6 +245,21 @@ def fetch_station_details(
 
 
 # ── Full scrape ────────────────────────────────────────────────────────────────
+
+def _fetch_station_data(
+    code: str,
+    include_schedules: bool,
+    include_details: bool,
+) -> tuple[str, tuple, tuple]:
+    """Worker: fetch schedule + details for one station code. Returns (code, sched_tuple, detail_tuple)."""
+    sched_result = (None, None, None)
+    detail_result = ([], {})
+    if include_schedules:
+        sched_result = fetch_station_schedule(code)
+    if include_details:
+        detail_result = fetch_station_details(code)
+    return code, sched_result, detail_result
+
 
 def fetch_all(
     include_schedules: bool = True,
@@ -259,40 +287,51 @@ def fetch_all(
 
     # Deduplicate codes (transfer stations appear on two lines)
     unique_stations: dict[str, Station] = {}
-    all_station_refs: list[Station] = []
+    refs_by_code: dict[str, list[Station]] = {}
     for line in network.lines:
         for station in line.stations:
-            all_station_refs.append(station)
+            refs_by_code.setdefault(station.code, []).append(station)
             if station.code not in unique_stations:
                 unique_stations[station.code] = station
 
-    total = len(unique_stations)
+    codes = list(unique_stations.keys())
+    total = len(codes)
+    completed = 0
 
-    for i, (code, station) in enumerate(unique_stations.items()):
-        if progress_callback:
-            progress_callback(i + 1, total, station.name)
+    with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
+        futures = {
+            pool.submit(_fetch_station_data, code, include_schedules, include_details): code
+            for code in codes
+        }
+        for future in as_completed(futures):
+            try:
+                code, sched_result, detail_result = future.result()
+            except Exception as exc:
+                logger.error("Station fetch failed for %s: %s", futures[future], exc)
+                completed += 1
+                continue
 
-        if include_schedules:
-            sched, term_a, term_b = fetch_station_schedule(code)
-            station.schedule = sched
-            station.terminal_a = term_a
-            station.terminal_b = term_b
+            completed += 1
+            station = unique_stations[code]
 
-        if include_details:
-            accesses, services = fetch_station_details(code)
-            station.accesses = accesses
-            station.services = services
+            if progress_callback:
+                progress_callback(completed, total, station.name)
 
-        # Propagate schedule/details to the same station on other lines
-        # (transfer stations share a code but are separate Station objects)
-        for ref in all_station_refs:
-            if ref.code == code and ref is not station:
-                if include_schedules:
-                    ref.schedule = station.schedule
-                    ref.terminal_a = station.terminal_a
-                    ref.terminal_b = station.terminal_b
-                if include_details:
-                    ref.accesses = station.accesses
-                    ref.services = station.services
+            if include_schedules:
+                station.schedule, station.terminal_a, station.terminal_b = sched_result
+
+            if include_details:
+                station.accesses, station.services = detail_result
+
+            # Propagate to duplicate refs (transfer stations)
+            for ref in refs_by_code.get(code, []):
+                if ref is not station:
+                    if include_schedules:
+                        ref.schedule = station.schedule
+                        ref.terminal_a = station.terminal_a
+                        ref.terminal_b = station.terminal_b
+                    if include_details:
+                        ref.accesses = station.accesses
+                        ref.services = station.services
 
     return network

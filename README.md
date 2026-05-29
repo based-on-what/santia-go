@@ -1,12 +1,22 @@
 # SantiaGO — Explorador de Transporte Público
 
-Aplicación web para explorar el transporte público de Santiago de Chile en tiempo real. Muestra un mapa interactivo donde puedes encontrar la estación de metro más cercana y los 3 paraderos de bus más próximos a cualquier punto de la ciudad.
+Aplicación web que muestra un mapa interactivo del transporte público de Santiago de Chile. Hacés clic en cualquier punto del mapa y el sistema te muestra la estación de metro más cercana y los 3 paraderos de bus más próximos, con tiempos de llegada en tiempo real.
 
-**Funcionalidades:**
-- Clic en el mapa → marca la estación de metro más cercana y los 3 paraderos de bus más próximos
-- Hover sobre el mapa → líneas de conexión en tiempo real al metro y paraderos cercanos
-- Clic sobre un marcador → popup con datos en tiempo real (próximos buses, estado de la línea de metro)
-- Leyenda visual con colores diferenciados por tipo de transporte
+**¿Qué podés hacer?**
+
+- Clic en el mapa → marca la estación de metro más cercana y los 3 paraderos más próximos
+- Hover sobre el mapa → líneas de conexión dinámicas al metro y buses cercanos
+- Clic sobre un marcador → popup con datos en tiempo real (próximos buses, estado de la línea, horarios, accesibilidad)
+
+---
+
+## Cómo funciona
+
+El proyecto tiene dos partes:
+
+1. **Frontend** (`public/`) — HTML + CSS + JavaScript puro con Mapbox GL JS. Carga dos archivos GeoJSON estáticos (estaciones de metro y paraderos de bus) y los muestra en el mapa. Cuando hacés clic, calcula el punto más cercano con un índice espacial de grilla, y luego consulta al backend para obtener datos en tiempo real.
+
+2. **Backend** (`api.py`) — API en FastAPI que hace scraping de `metro.cl` para obtener el estado de la red y los horarios de cada estación, y consulta `ibus-server.py` (un proxy separado) para los tiempos de llegada de buses. Los datos se cachean 5 minutos para no sobrecargar las fuentes externas.
 
 ---
 
@@ -15,8 +25,8 @@ Aplicación web para explorar el transporte público de Santiago de Chile en tie
 | Capa | Tecnología |
 |---|---|
 | Frontend | HTML5 + CSS3 + JavaScript (vanilla) + Mapbox GL JS v2.15 |
-| Backend | Python 3.11 + FastAPI 0.104 + Uvicorn/Gunicorn |
-| Datos | GeoJSON (GTFS DTPM) + scraping Metro.cl + iBUS proxy |
+| Backend | Python 3.11 + FastAPI 0.104 + Uvicorn / Gunicorn |
+| Datos | GeoJSON (GTFS DTPM) + scraping Metro.cl + proxy iBUS |
 | Deploy | Railway.app |
 
 ---
@@ -25,167 +35,140 @@ Aplicación web para explorar el transporte público de Santiago de Chile en tie
 
 ```
 santiaGO/
-├── public/                              ← frontend estático
+├── public/                                 ← frontend estático
 │   ├── index.html
 │   ├── css/main.css
-│   ├── js/main.js                       (mapa, interactividad, llamadas a la API)
+│   ├── js/main.js                          (mapa, interactividad, llamadas a la API)
 │   └── data/
-│       ├── estaciones_with_lines.geojson   (~100 KB — estaciones de metro con línea)
+│       ├── estaciones_with_lines.geojson   (~100 KB — estaciones con número de línea)
 │       └── paraderos_santiago.geojson      (~3.7 MB — paraderos GTFS DTPM)
 │
-├── metro/                               ← módulo Python de scraping
-│   ├── models.py                        (modelos de datos)
-│   ├── scraper.py                       (scraping de metro.cl)
-│   ├── cache.py                         (caché en disco, TTL 5 min)
-│   └── cli.py                           (herramientas de línea de comando)
+├── routes/                                 ← endpoints de la API
+│   ├── health.py                           (GET /api/health)
+│   ├── metro.py                            (GET /api/metro-network, /api/metro/estacion/...)
+│   └── ibus.py                             (GET /api/paradero/{id})
 │
-├── api.py                               ← aplicación FastAPI (backend principal)
-├── ibus-server.py                       ← servidor proxy para iBUS
-├── Procfile                             ← comando de inicio en producción
-├── requirements.txt                     ← dependencias Python
-├── runtime.txt                          ← versión de Python (3.11)
-├── pyproject.toml                       ← metadata del proyecto
-├── railway.toml                         ← configuración de deploy en Railway
-├── .env.example                         ← variables de entorno de referencia
-├── RAILWAY_DEPLOYMENT.md                ← guía detallada de deploy
-└── README.md
+├── metro/                                  ← módulo Python de datos de metro
+│   ├── models.py                           (estructuras de datos: línea, estación, horarios)
+│   ├── scraper.py                          (scraping de metro.cl)
+│   ├── serializers.py                      (conversión modelos ↔ JSON)
+│   ├── cache.py                            (caché en disco con TTL 5 min)
+│   ├── cli.py                              (herramientas de línea de comando)
+│   ├── services/
+│   │   └── network_service.py             (singleton con caché en memoria de la red)
+│   └── infrastructure/
+│       └── ibus.py                         (cliente HTTP hacia el proxy iBUS)
+│
+├── api.py                                  ← aplicación FastAPI (punto de entrada)
+├── ibus-server.py                          ← servidor proxy para m.ibus.cl
+├── Procfile                                ← comando de inicio en producción
+├── requirements.txt
+├── runtime.txt                             ← Python 3.11
+├── railway.toml                            ← configuración de deploy
+└── .env.example                            ← variables de entorno de referencia
 ```
 
 ---
 
 ## Correr localmente
 
-### Solo frontend
+### Solo frontend (sin datos en tiempo real)
 
-El frontend es HTML+CSS+JS puro — no requiere compilación ni Node.js.
+El frontend es HTML+CSS+JS puro, sin compilación ni Node.js.
 
-**Opción A — Live Server (VS Code):**
+**VS Code — Live Server:**
 ```
 Clic derecho en public/index.html → "Open with Live Server"
 ```
 
-**Opción B — servidor Python:**
+**Servidor Python:**
 ```bash
 cd public
 python -m http.server 8080
 # Abre http://localhost:8080
 ```
 
-**Opción C — npx serve:**
-```bash
-npx serve public
-```
+> No abras `index.html` directamente como `file://` — los fetch de los GeoJSON fallarán por CORS.
 
-> No abras `public/index.html` directo como `file://` — los `fetch()` de los GeoJSON fallarán por CORS.
-
-### Frontend + Backend (datos en tiempo real)
+### Frontend + backend (datos en tiempo real)
 
 ```bash
 # Instalar dependencias
 pip install -r requirements.txt
 
-# Iniciar el servidor API
+# Iniciar el servidor
 uvicorn api:app --reload --host 0.0.0.0 --port 8000
 
-# El frontend ya estará disponible en http://localhost:8000
+# Abre http://localhost:8000
 ```
+
+El backend también sirve el frontend estático desde `public/`, así que no necesitás levantar dos servidores.
 
 ---
 
 ## API endpoints
 
-El backend expone los siguientes endpoints:
-
 | Método | Endpoint | Descripción |
 |---|---|---|
 | `GET` | `/api/health` | Estado del servidor |
-| `GET` | `/api/paradero/{id}` | Tiempos en tiempo real para un paradero |
-| `GET` | `/api/metro-network` | Estado de toda la red de metro |
+| `GET` | `/api/metro-network` | Estado de toda la red (caché 5 min) |
 | `GET` | `/api/metro/estacion?nombre=<nombre>` | Detalle de estación por nombre |
-| `GET` | `/api/metro/estacion/{codigo}` | Detalle de estación por código |
-| `GET` | `/` | Frontend (archivos estáticos desde `public/`) |
-
-**Fuentes de datos en tiempo real:**
-- Metro: scraping de `metro.cl` con caché de 5 minutos
-- Buses: proxy hacia iBUS (`ibus-server.py`)
+| `GET` | `/api/metro/estacion/{codigo}` | Detalle de estación por código (ej: `BA`) |
+| `GET` | `/api/paradero/{id}` | Próximos buses en un paradero (tiempo real) |
+| `GET` | `/` | Frontend estático |
 
 ---
 
 ## Variables de entorno
 
-Ver `.env.example` para el listado completo. Las principales son:
+Copiá `.env.example` a `.env` y completá los valores:
 
 ```env
-# Token público de Mapbox (prefijo pk. — seguro para el navegador)
+# Token público de Mapbox (prefijo pk. — seguro para usarlo en el navegador)
 MAPBOX_PUBLIC_TOKEN=pk.eyJ1...
 
 # URL del proxy iBUS (usado por el backend en producción)
 IBUS_PROXY_URL=https://...
-
-# URL de la API Red (alternativa al proxy iBUS)
-RED_API_URL=https://red-proxy.TU_USUARIO.workers.dev
 ```
-
-El token de Mapbox tiene prefijo `pk.` (*public key*) — está diseñado por Mapbox para usarse en el navegador y no es un secreto.
-
----
-
-## Datos GeoJSON
-
-Los archivos en `public/data/` son la fuente de datos estáticos de la app:
-
-| Archivo | Tamaño | Contenido |
-|---|---|---|
-| `estaciones_with_lines.geojson` | ~100 KB | Estaciones de Metro con número de línea |
-| `paraderos_santiago.geojson` | ~3.7 MB | Paraderos de bus (fuente: GTFS DTPM) |
-
-No modificar estos archivos salvo que haya una actualización deliberada de datos.
 
 ---
 
 ## Deploy en Railway
 
-El proyecto está configurado para desplegar en [Railway.app](https://railway.app) con un solo comando.
-
 ```bash
-# Instalar CLI de Railway
 npm install -g @railway/cli
-
-# Login y deploy
 railway login
 railway init
 railway up
 ```
 
-La app estará disponible en ~2 minutos en una URL del tipo:
-`https://santiago-production.up.railway.app`
-
-Ver [`RAILWAY_DEPLOYMENT.md`](RAILWAY_DEPLOYMENT.md) para la guía completa con variables de entorno, dominios personalizados y monitoreo.
+La app queda disponible en `https://santiago-production.up.railway.app` en ~2 minutos. Ver [`RAILWAY_DEPLOYMENT.md`](RAILWAY_DEPLOYMENT.md) para la guía completa.
 
 ---
 
 ## Troubleshooting
 
 **El mapa no carga / pantalla de carga infinita**
-- Asegúrate de estar usando un servidor HTTP (no `file://`)
-- Revisa la consola del navegador para errores de fetch o de red
-- Confirma que los archivos `.geojson` existen en `public/data/`
+
+- Usá un servidor HTTP, no `file://`
+- Verificá en la consola del navegador si hay errores de red
 
 **Los GeoJSON devuelven 404**
-- Las rutas en `main.js` son relativas: `./data/estaciones_with_lines.geojson`
-- El servidor debe estar sirviendo desde `public/` como raíz
+
+- El servidor debe servir desde `public/` como raíz (no desde la raíz del proyecto)
 
 **El popup no muestra datos en tiempo real**
-- Verifica que el backend esté corriendo en el puerto 8000
-- Revisa la consola del navegador por errores de CORS o de red
-- El caché tiene TTL de 5 minutos; los primeros requests pueden ser más lentos
+
+- Verificá que el backend esté corriendo en el puerto 8000
+- El primer request puede tardar más (caché fría); los siguientes son rápidos
 
 ---
 
 ## Fuentes de datos
 
-| Fuente | Enlace |
-|---|---|
-| GeoJSON GTFS buses | [DTPM — Ministerio de Transporte](https://www.dtpm.cl/index.php/gtfs-vigente) |
-| Estado e info del metro | [metro.cl](https://www.metro.cl) (scraping) |
-| Mapa base | [Mapbox GL JS](https://docs.mapbox.com/mapbox-gl-js/) |
+| Fuente | Uso |
+| --- | --- |
+| [metro.cl](https://www.metro.cl) | Estado de la red, horarios, accesibilidad (scraping) |
+| [m.ibus.cl](https://m.ibus.cl) | Tiempos de llegada de buses en tiempo real (proxy) |
+| [DTPM — Ministerio de Transporte](https://www.dtpm.cl/index.php/gtfs-vigente) | Ubicación de paraderos (GTFS GeoJSON estático) |
+| [Mapbox GL JS](https://docs.mapbox.com/mapbox-gl-js/) | Mapa base |
