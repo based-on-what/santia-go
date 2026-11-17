@@ -1,0 +1,93 @@
+{
+ "fechaprediccion": "2026-11-17",
+ "horaprediccion": "12:14",
+ "nomett": "AVENIDA MATTA / ESQ. AVENIDA PORTUGAL",
+ "paradero": "PA443",
+ "respuestaParadero": "09 - Entrega la frecuencia del servicio",
+ "servicios": {
+  "item": [
+   {
+    "codigorespuesta": "00",
+    "distanciabus1": "599",
+    "distanciabus2": "5421",
+    "horaprediccionbus1": "Llegando",
+    "horaprediccionbus2": "Entre 20 Y 24 min",
+    "ppubus1": "VZVV-63",
+    "ppubus2": "VRZG-52",
+    "respuestaServicio": "Información de tiempos de los próximos 2 buses",
+    "servicio": "506",
+    "color": "#0093B3",
+    "destino": "Maipú",
+    "sentido": "2",
+    "itinerario": true,
+    "codigo": "U5"
+   },
+   {
+    "codigorespuesta": "00",
+    "distanciabus1": "4113",
+    "distanciabus2": "6223",
+    "horaprediccionbus1": "Entre 14 Y 18 min",
+    "horaprediccionbus2": "Entre 22 Y 26 min",
+    "ppubus1": "PFWZ-69",
+    "ppubus2": "PFXC-59",
+    "respuestaServicio": "Información de tiempos de los próximos 2 buses",
+    "servicio": "506v",
+    "color": "#0093B3",
+    "destino": "Villa El Abrazo",
+    "sentido": "2",
+    "itinerario": false,
+    "codigo": "U5"
+   },
+   {
+    "codigorespuesta": "00",
+    "distanciabus1": "574",
+    "distanciabus2": "3589",
+    "horaprediccionbus1": "En menos de 2 min",
+    "horaprediccionbus2": "Entre 13 Y 17 min",
+    "ppubus1": "GCBF-17",
+    "ppubus2": "PFXB-43",
+    "respuestaServicio": "Información de tiempos de los próximos 2 buses",
+    "servicio": "507",
+    "color": "#0093B3",
+    "destino": "ENEA",
+    "sentido": "2",
+    "itinerario": false,
+    "codigo": "U5"
+   },
+   {
+    "codigorespuesta": "00",
+    "distanciabus1": "554",
+    "distanciabus2": "3634",
+    "horaprediccionbus1": "Llegando",
+    "horaprediccionbus2": "Entre 14 Y 18 min",
+    "ppubus1": "PFXB-68",
+    "ppubus2": "GCBC-53",
+    "respuestaServicio": "Información de tiempos de los próximos 2 buses",
+    "servicio": "510",
+    "color": "#0093B3",
+    "destino": "Pudahuel Sur",
+    "sentido": "2",
+    "itinerario": false,
+    "codigo": "U5"
+   },
+   {
+    "codigorespuesta": "10",
+    "distanciabus1": "",
+    "distanciabus2": "",
+    "horaprediccionbus1": "",
+    "horaprediccionbus2": "",
+    "ppubus1": "",
+    "ppubus2": "",
+    "respuestaServicio": "No hay buses que se dirijan al paradero",
+    "servicio": "507c",
+    "color": "#0093B3",
+    "destino": "Metro Parque O'Higgins",
+    "sentido": "2",
+    "itinerario": false,
+    "codigo": "U5"
+   }
+  ]
+ },
+ "x": "-33.4560234",
+ "y": "-70.6331212"
+}

@@ -1,12 +1,12 @@
 /* ============================================================
-   main.js — Explorador de Transporte Santiago
+   main.js - Explorador de Transporte Santiago
    ============================================================ */
 
 /* ---------- CONFIG ---------- */
 // Token inyectado desde index.html como window.MAPBOX_TOKEN
 mapboxgl.accessToken = window.MAPBOX_TOKEN;
 
-// Producción (Railway): rutas relativas /api/... → backend Python
+// Producción (Railway): rutas relativas /api/... -> backend Python
 // Desarrollo local: servidor Python en localhost:8000 (python -m uvicorn api:app --reload)
 const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
   ? 'http://localhost:8000'
@@ -14,7 +14,7 @@ const API_BASE = (window.location.hostname === 'localhost' || window.location.ho
 
 const ROUTE_COLORS  = ['#FF0000', '#008000', '#0000FF'];
 
-/* ── Metro line color palette (matches official Transantiago branding) ── */
+/* -- Metro line color palette (matches official Transantiago branding) -- */
 const METRO_LINE_COLORS = {
   L1:  { bg: 'oklch(97% 0.035 25)',  fg: 'oklch(49% 0.24 25)'  },
   L2:  { bg: 'oklch(98% 0.055 82)',  fg: 'oklch(54% 0.22 75)'  },
@@ -25,7 +25,7 @@ const METRO_LINE_COLORS = {
   L6:  { bg: 'oklch(96% 0.035 305)', fg: 'oklch(42% 0.19 305)' },
 };
 
-/* ── Popup HTML constants ────────────────────────────────────────────── */
+/* -- Popup HTML constants ---------------------------------------------- */
 const LOADING_BUS_HTML = `
   <div class="popup-skeleton" aria-label="Cargando datos del paradero">
     <div class="skel skel--wide"></div>
@@ -44,7 +44,7 @@ const LOADING_METRO_HTML = `
     <div class="skel skel--short"></div>
   </div>`;
 
-/* ── Shared utility (needs module scope for createErrorHtml) ── */
+/* -- Shared utility (needs module scope for createErrorHtml) -- */
 function escapeHtml(s) {
   return String(s ?? '')
     .replace(/&/g, '&amp;')
@@ -95,11 +95,11 @@ const App = (() => {
   function haversineDistance([lon1, lat1], [lon2, lat2]) {
     if (lon1 == null || lat1 == null || lon2 == null || lat2 == null) return Infinity;
     const R  = 6371e3;
-    const φ1 = lat1 * Math.PI / 180;
-    const φ2 = lat2 * Math.PI / 180;
-    const Δφ = (lat2 - lat1) * Math.PI / 180;
-    const Δλ = (lon2 - lon1) * Math.PI / 180;
-    const a  = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+    const phi1 = lat1 * Math.PI / 180;
+    const phi2 = lat2 * Math.PI / 180;
+    const dPhi = (lat2 - lat1) * Math.PI / 180;
+    const dLambda = (lon2 - lon1) * Math.PI / 180;
+    const a  = Math.sin(dPhi / 2) ** 2 + Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLambda / 2) ** 2;
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
@@ -109,7 +109,7 @@ const App = (() => {
     return dx * dx + dy * dy;
   }
 
-  // Encuentra los k más cercanos: pre-filtro por aprox → haversine en candidatos
+  // Encuentra los k más cercanos: pre-filtro por aprox -> haversine en candidatos
   function findNearestPoints(points, coords, limit = 1) {
     if (!points || points.length === 0) return [];
     const approx = points
@@ -123,8 +123,8 @@ const App = (() => {
       .slice(0, limit);
   }
 
-  // ---- Spatial grid index — O(1) nearest-neighbor on hot paths ----
-  // cellSize 0.01° ≈ 1 km; radius 2 checks 5×5 cells (~25 km²) — always finds nearest stop.
+  // ---- Spatial grid index - O(1) nearest-neighbor on hot paths ----
+  // cellSize 0.01 deg ~ 1 km; radius 2 checks 5x5 cells (~25 km2) - always finds nearest stop.
   function buildSpatialGrid(points, cellSize = 0.01) {
     const grid = new Map();
     for (let i = 0; i < points.length; i++) {
@@ -170,12 +170,12 @@ const App = (() => {
 
   let _prevFocusEl = null;
 
-  // Cached popup dimensions — avoid forced reflow on every map move/zoom
+  // Cached popup dimensions - avoid forced reflow on every map move/zoom
   let _cachedPopupSize = null; // { w, h }
-  // Cached tooltip width — updated lazily, avoids reflow on every mousemove frame
+  // Cached tooltip width - updated lazily, avoids reflow on every mousemove frame
   let _lastTooltipW = 120;
-  // Per-station API cache — prevents duplicate fetches for the same station
-  const _stationCache = new Map(); // name.toLowerCase() → { data, ts }
+  // Per-station API cache - prevents duplicate fetches for the same station
+  const _stationCache = new Map(); // name.toLowerCase() -> { data, ts }
   const _STATION_TTL_MS = 300_000;
 
   popupCloseBtn.addEventListener('click', (ev) => { ev.stopPropagation(); closeCustomPopup(); });
@@ -313,7 +313,7 @@ const App = (() => {
 
     if (!stopData.servicios?.length) {
       return html + `<div class="popup-empty">
-        <span class="popup-empty__icon" aria-hidden="true">—</span>
+        <span class="popup-empty__icon" aria-hidden="true">\u2014</span>
         <p class="popup-empty__msg">Sin información de servicios disponible</p>
       </div>`;
     }
@@ -356,12 +356,12 @@ const App = (() => {
   function createMetroPopupContent(station) {
     if (!station) {
       return `<div class="popup-empty">
-        <span class="popup-empty__icon" aria-hidden="true">—</span>
+        <span class="popup-empty__icon" aria-hidden="true">\u2014</span>
         <p class="popup-empty__msg">Sin información disponible</p>
       </div>`;
     }
 
-    const fmt       = (v) => escapeHtml((v && v !== '-') ? v : '—');
+    const fmt       = (v) => escapeHtml((v && v !== '-') ? v : '\u2014');
     const statusOk  = !!station.enabled;
     const statusTxt = escapeHtml(station.status_description || (statusOk ? 'Operativa' : 'No habilitada'));
     const lines     = [station.line_id, ...(station.transfers || [])].filter(Boolean);
@@ -372,7 +372,7 @@ const App = (() => {
     }).join('');
 
     let html = `<div class="station-meta">
-      ${lineBadges || '<span class="line-badge">—</span>'}
+      ${lineBadges || '<span class="line-badge">\u2014</span>'}
       <span class="status-badge status-badge--${statusOk ? 'ok' : 'err'}">${statusTxt}</span>
     </div>`;
 
@@ -387,19 +387,19 @@ const App = (() => {
         <div class="schedule-row">
           <span class="schedule-row__day">L - V</span>
           <span class="schedule-row__range">
-            ${fmt(sched.open?.weekdays)}<span class="schedule-row__dash">→</span>${fmt(sched.close?.weekdays)}
+            ${fmt(sched.open?.weekdays)}<span class="schedule-row__dash">\u2192</span>${fmt(sched.close?.weekdays)}
           </span>
         </div>
         <div class="schedule-row">
           <span class="schedule-row__day">Sábado</span>
           <span class="schedule-row__range">
-            ${fmt(sched.open?.saturday)}<span class="schedule-row__dash">→</span>${fmt(sched.close?.saturday)}
+            ${fmt(sched.open?.saturday)}<span class="schedule-row__dash">\u2192</span>${fmt(sched.close?.saturday)}
           </span>
         </div>
         <div class="schedule-row">
           <span class="schedule-row__day">Dom / Fest</span>
           <span class="schedule-row__range">
-            ${fmt(sched.open?.holidays)}<span class="schedule-row__dash">→</span>${fmt(sched.close?.holidays)}
+            ${fmt(sched.open?.holidays)}<span class="schedule-row__dash">\u2192</span>${fmt(sched.close?.holidays)}
           </span>
         </div>
       </div>`;
@@ -489,13 +489,11 @@ const App = (() => {
           if (res.ok) {
             const data = await res.json();
             updatePopupContent(createBusStopPopupContent(data), marker);
-          } else if (res.status === 502) {
-            const errBody = await res.json().catch(() => ({}));
-            const isIbus  = ['ibus', 'iBUS', 'm.ibus.cl'].some(s => (errBody.detail || '').includes(s));
-            const msg     = isIbus ? 'Servicio iBUS no disponible en este momento.' : `Error al obtener datos del paradero (${res.status})`;
-            updatePopupContent(createErrorHtml(msg), marker);
           } else {
-            updatePopupContent(createErrorHtml(`Error al obtener datos del paradero (${res.status})`), marker);
+            // The backend sends fixed, client-safe messages; FastAPI's own validation errors send a list instead.
+            const errBody = await res.json().catch(() => ({}));
+            const msg = typeof errBody.detail === 'string' ? errBody.detail : `Error al obtener datos del paradero (${res.status})`;
+            updatePopupContent(createErrorHtml(msg), marker);
           }
         } catch (err) {
           console.error('bus fetch error', err);
@@ -541,7 +539,7 @@ const App = (() => {
     const mapContainer = document.getElementById('map-container');
     const mapRect     = mapContainer.getBoundingClientRect();
     // Set text before positioning; use cached width to avoid forced reflow on hot path
-    tooltip.textContent = nearestMetro ? `Cerca: ${nearestMetro.properties.name}` : 'Cerca: —';
+    tooltip.textContent = nearestMetro ? `Cerca: ${nearestMetro.properties.name}` : 'Cerca: \u2014';
     const ttW = _lastTooltipW;
     const ttH = 20;
     let left  = point.x + 10;
@@ -553,7 +551,7 @@ const App = (() => {
     tooltip.style.left    = `${left + mapRect.left}px`;
     tooltip.style.top     = `${top  + mapRect.top}px`;
     tooltip.style.display = 'block';
-    // Refresh cached width lazily — no blocking reflow this frame
+    // Refresh cached width lazily - no blocking reflow this frame
     requestAnimationFrame(() => { _lastTooltipW = tooltip.offsetWidth || _lastTooltipW; });
   }
 
